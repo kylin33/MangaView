@@ -1,0 +1,9 @@
+* text=auto
+*.kt text
+*.kts text
+*.json text
+*.md text
+*.xml text
+gradlew text eol=lf
+gradle-wrapper.jar binary
+*.apk binary

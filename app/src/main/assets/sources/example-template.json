@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "example-template",
+  "name": "示例模板（未启用）",
+  "description": "复制本文件改名，改 id 和 baseUrl，按目标站点写好 4 组选择器，再把 enabled 改成 true，左侧菜单就会出现。字段含义见项目 README 的「站点配置 JSON 说明」。",
+  "baseUrl": "https://example.com",
+  "enabled": false,
+  "referer": "{baseUrl}/",
+  "timeoutMs": 15000,
+  "trustAllCerts": false,
+  "home": {
+    "path": "/",
+    "item": "div.comic-item",
+    "link": { "select": "a", "attr": "href" },
+    "cover": { "select": "img", "attr": "data-src|src" },
+    "title": { "select": "h3", "attr": "text" }
+  },
+  "search": {
+    "path": "/search?q={keyword}",
+    "item": "div.comic-item",
+    "link": { "select": "a", "attr": "href" },
+    "cover": { "select": "img", "attr": "data-src|src" },
+    "title": { "select": "h3", "attr": "text" }
+  },
+  "detail": {
+    "item": "ul#chapter-list li a",
+    "chapterUrl": { "select": "", "attr": "href" },
+    "chapterTitle": { "select": "", "attr": "text" }
+  },
+  "reader": {
+    "item": "div.reader img",
+    "image": { "select": "", "attr": "src" },
+    "referer": "{pageUrl}"
+  }
+}
