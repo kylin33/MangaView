@@ -74,6 +74,8 @@ class HomeViewModel(
     private fun observeSourceChanges() {
         viewModelScope.launch {
             sources.version.drop(1).collect {
+                // 配置被编辑过，旧的 MangaSource 还拿着旧选择器，必须让引擎重建实例
+                repository.invalidateSources()
                 // 缓存绑定了站点 id，配置变了先清掉，免得旧列表冒充新站点
                 repository.clearHomeCache()
                 _uiState.update { it.copy(mangas = emptyList()) }

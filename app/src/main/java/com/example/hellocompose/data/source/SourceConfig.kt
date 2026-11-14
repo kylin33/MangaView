@@ -118,6 +118,12 @@ data class SourceConfig(
     val detail: DetailRule,
     val reader: ReaderRule,
     /**
+     * 自动识别算出来的置信度。手写/导入的配置没有这一项。
+     * 它记录的只是「识别那一刻」的把握，用户后续手改选择器不会更新它，
+     * 所以 UI 上要说明来源，别让人误以为是实时校验结果。
+     */
+    val confidence: SourceConfidence? = null,
+    /**
      * 以下两个字段不来自 JSON，由 SourceRepository 在读取时填充。
      * 放在数据类里而不是单独的包装类，是为了让 UI 拿到配置就知道该不该显示「删除」。
      */

@@ -4,6 +4,7 @@ import com.example.hellocompose.core.AppResult
 import com.example.hellocompose.core.ErrorType
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.MangaScraper
+import com.example.hellocompose.engine.autogen.SourceAutoGenerator
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume

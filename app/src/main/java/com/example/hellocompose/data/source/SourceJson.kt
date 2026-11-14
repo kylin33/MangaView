@@ -25,6 +25,17 @@ object SourceJson {
         root.put("timeoutMs", config.timeoutMs)
         root.put("trustAllCerts", config.trustAllCerts)
 
+        // 置信度只对自动识别出来的配置有意义，手写的配置不写这个节点，
+        // 免得让人以为「没有置信度就是不可信」
+        config.confidence?.let { confidence ->
+            root.put("confidence", JSONObject().apply {
+                put("overall", confidence.overall.round3())
+                put("home", confidence.home.round3())
+                put("detail", confidence.detail.round3())
+                put("reader", confidence.reader.round3())
+            })
+        }
+
         root.put("home", listRule(config.home))
         config.search?.let { root.put("search", listRule(it)) }
 
@@ -66,4 +77,7 @@ object SourceJson {
         put("select", rule.select)
         put("attr", rule.attr)
     }
+
+    /** 保留三位小数：0.9200000001 这种值写进配置只会让人怀疑算错了 */
+    private fun Double.round3(): Double = kotlin.math.round(this * 1000) / 1000
 }

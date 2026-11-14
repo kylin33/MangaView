@@ -5,6 +5,7 @@ import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.source.SourceConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jsoup.nodes.Document
 import java.net.URLEncoder
 
 /**
@@ -44,4 +45,11 @@ class MangaScraper(
             val doc = http.get(source, chapterUrl)
             PageParser.images(doc, source.reader, source.baseUrl)
         }
+
+    /**
+     * 直接拿整份页面。给需要「页面本身」的调用方用（如详情页顺带取标题/简介），
+     * 避免为了几个 meta 字段再写一套请求逻辑。
+     */
+    suspend fun fetchDocument(source: SourceConfig, url: String): Document =
+        withContext(Dispatchers.IO) { http.get(source, url) }
 }

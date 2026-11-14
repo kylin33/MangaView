@@ -19,6 +19,113 @@
   阅读页换源还会停在原来的位置
 - **配置可移植**：粘贴 / 选文件 / 从链接导入，也可以把当前能用的配置分享给别人
 
+## 架构：三个引擎
+
+```
+ui/           Compose 页面：只持状态、发命令，不解析 HTML、不拼 URL
+ └─ engine/
+     ├─ source/   站点适配引擎：各种站点 → 统一的 MangaSource
+     ├─ reader/   阅读引擎：只认 List<Page>，不知道站点的存在
+     └─ autogen/  自动识别引擎：URL → 一套带置信度的配置
+ └─ data/         引擎内部的实现与基础设施（HTTP、解析、存储）
+```
+
+依赖方向单向：`ui → engine → data`。站点规则的变化被挡在 Source Engine 里，
+阅读体验的变化被挡在 Reading Engine 里，两者互不影响。
+
+### Source Engine
+
+```kotlin
+interface MangaSource {
+    val id: String
+    val name: String
+    val capabilities: SourceCapabilities   // canListHome / canSearch / searchOnly
+
+    suspend fun getHome(): List<Manga>
+    suspend fun search(keyword: String): List<Manga>
+    suspend fun getDetail(url: String): MangaDetail
+    suspend fun getChapters(url: String): List<Chapter>
+    suspend fun getPages(url: String): List<Page>
+}
+```
+
+- **`JsonMangaSource`** 是默认实现：把一份 JSON 规则跑起来，结果翻译成标准类型。
+  它不属于任何具体站点，换站点只换配置。
+- **`SourceEngine`** 是上层唯一入口，负责实例缓存、配置变更后重建、以及路由到专用实现。
+- **专用实现扩展点**：某个站结构特殊到规则表达不了（正文走 WebSocket、要登录态、私有 API），
+  写一个 `MangaSource` 实现挂上去即可，UI 和阅读引擎都不用动：
+
+```kotlin
+sourceEngine.register { config ->
+    if (config.id == "special-site") SpecialSiteSource(config) else null
+}
+```
+
+返回 `null` 表示不管这个配置，引擎自动退回 JSON 实现。
+
+能力缺失用 `SourceUnsupportedException` 表达，和网络错误区分开 ——
+UI 才能给出「换个源」而不是「检查网络」。
+
+### Reading Engine
+
+```kotlin
+class ReadingEngine(
+    loader: PageLoader,                 // suspend (chapterUrl) -> AppResult<List<Page>>
+    preloader: PagePreloader,           // 通常由图片库实现
+    initialChapter: Chapter,
+    scope: CoroutineScope,
+    positionListener: PositionListener? // 停稳后回调，用于落盘
+)
+```
+
+它只接收标准化的 `List<Page>`（图片地址 + Referer），因此**一行业务代码都不依赖站点**：
+
+| 职责 | 实现要点 |
+| --- | --- |
+| 页面加载与调度 | 切章时取消上一章的加载，避免旧响应覆盖新章节 |
+| 预加载窗口 | 可见页之后 N 页入队，到最后一页自动截断 |
+| 阅读位置 | 恢复上次页码（只用一次）；停稳 600ms 后防抖落盘 |
+| 章节切换 | 持有正序目录，上一章/下一章内部完成，返回栈不会堆积 |
+| 失败重试 | 重开当前章并回到原页码 |
+| 下一章预取 | 离末尾 3 页时预取下一章前 2 页，翻章不白屏 |
+| 滚动位置恢复 | 暴露 `restoreIndex`，UI 消费后调 `consumeRestore()` 复位 |
+
+换图片库只改 `CoilPagePreloader` 一个适配器；引擎本身的「恢复位置 / 预加载窗口 / 翻章」
+都能用假的 loader 在纯 JVM 里测（见 `ReadingEngineTest`）。
+
+### Auto Generator
+
+```
+URL → 首页 HTML → 推断列表选择器 → 进详情页 → 推断章节选择器
+    → 进第一章 → 推断图片选择器 → 生成 JSON → 用正式解析器验证
+```
+
+在此之上补了**置信度**：同一站点可能推出好几套都「勉强能抓」的规则，
+需要有一个数说明哪套更可信、哪一步最可疑。
+
+首页五项权重（初始值，需用真实站点校准，集中定义在 `ConfidenceScorer`）：
+
+| 检测项 | 权重 |
+| --- | --- |
+| 列表条目数量 | 20% |
+| 标题有效率 | 20% |
+| URL 有效率 | 20% |
+| 图片有效率 | 20% |
+| 详情页及章节验证 | 20% |
+
+整体按「越接近正文越重要」加权：首页 30%、目录 35%、正文 35%。
+仅搜索配置因为首页必然为空，额外扣 0.08。
+
+输出会写进配置本身，以后排查「这份配置当时是怎么来的」不用靠记忆：
+
+```json
+"confidence": { "overall": 0.984, "home": 1, "detail": 1, "reader": 0.955 }
+```
+
+每一项都是**已经真实发生的事实**（解析出多少条、多少条标题非空、第一章是否真打开过），
+不做基于页面猜测的加分。识别页会把最弱的一项直接指出来，
+例如「最弱环节：文件名去重率 —— 去重率 42%（低说明抓到的是封面墙）」。
+
 ## 构建
 
 ```bash
@@ -223,25 +330,40 @@ com.example.hellocompose
 ├── MangaApp.kt / MainActivity.kt   Application + 入口
 ├── core/                           AppConfig、AppResult、TimeText
 ├── di/                             AppContainer 手动依赖容器
+├── engine/
+│   ├── source/                     ★ 站点适配引擎
+│   │   ├── MangaSource             统一接口 + Page / MangaDetail / 能力描述
+│   │   ├── JsonMangaSource         默认实现：JSON 规则驱动
+│   │   └── SourceEngine            实例缓存、配置失效、专用实现注册
+│   ├── reader/                     ★ 阅读引擎
+│   │   ├── ReadingEngine           加载/预加载/位置/翻章/重试
+│   │   └── ChapterOrder            目录顺序归一化（纯函数）
+│   └── autogen/                    ★ 自动识别引擎
+│       ├── SourceAutoGenerator     三步识别编排 + 降级重试 + 置信度汇总
+│       ├── SourceAutoDetector      结构识别：HTML → 候选选择器
+│       └── DetectionConfidence     打分模型与权重
 ├── data/
 │   ├── model/                      Manga、Chapter
-│   ├── source/                     站点配置与自动识别
-│   │   ├── SourceConfig/Parser/Repository/Json
-│   │   ├── SourceAutoDetector      结构识别：HTML → 候选选择器
-│   │   ├── SourceAutoGenerator     三步识别编排 + 降级重试
-│   │   ├── ScriptData              内联脚本 JSON 定位与配平
-│   │   ├── ChapterMatch            跨站章节匹配
-│   │   └── RuleEvaluator           select/attr 语义的唯一实现
+│   ├── source/                     配置与解析基础设施
+│   │   ├── SourceConfig/Parser/Repository/Json   配置模型、解析、读写
+│   │   ├── SourceConfidence       随配置保存的置信度
+│   │   ├── ScriptData             内联脚本 JSON 定位与配平
+│   │   ├── ChapterMatch           跨站章节匹配
+│   │   ├── Dom                    结构分析底层工具
+│   │   └── RuleEvaluator          select/attr 语义的唯一实现
 │   ├── remote/                     JsoupHttpClient、MangaScraper、PageParser
-│   ├── repository/                 MangaRepository（按当前站点取数、统一异常）
+│   ├── repository/                 MangaRepository（选站点、统一异常、首页缓存）
 │   ├── history/                    ReadingRecord、HistoryRepository（进度 + 浏览记录）
 │   ├── settings/                   SettingsRepository（DataStore）
-│   └── image/                      MangaImageRequests
+│   └── image/                      MangaImageRequests、CoilPagePreloader
 └── ui/
     ├── home/ detail/ reader/ search/ history/ source/
     ├── components/                 SourceDrawer、SourceSwitchSheet、ContinueReadingCard…
     ├── navigation/ theme/
 ```
+
+> `ui/source`（添加/编辑站点）仍然直接持有 `SourceConfig`：它的职责就是编辑那份 JSON，
+> 属于配置管理而不是阅读链路。首页、详情、阅读三处已经完全不接触规则结构。
 
 ## 设计取舍
 

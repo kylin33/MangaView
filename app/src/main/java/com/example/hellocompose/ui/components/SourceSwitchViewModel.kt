@@ -157,7 +157,14 @@ class SourceSwitchViewModel(
                 }
 
                 is AppResult.Failure -> _uiState.update {
-                    it.copy(step = SwitchStep.Message(site.config, result.error.userMessage))
+                    // 这个面板要回答的是「为什么这个站不行」，所以优先用具体原因：
+                    // 「没有搜索规则」比分类话术「页面结构已变化」有用得多
+                    it.copy(
+                        step = SwitchStep.Message(
+                            site.config,
+                            result.error.detail.ifBlank { result.error.userMessage }
+                        )
+                    )
                 }
             }
         }

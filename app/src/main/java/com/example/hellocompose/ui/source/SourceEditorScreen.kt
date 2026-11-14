@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.hellocompose.data.source.ConfidenceLevel
 import com.example.hellocompose.ui.LocalAppContainer
 
 /**
@@ -489,6 +490,26 @@ private fun AutoDetectPanel(
             }
 
             state.report?.let { report ->
+                val confidence = report.confidence
+                Text(
+                    text = "置信度 ${(confidence.overall * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = when (confidence.level) {
+                        ConfidenceLevel.HIGH -> MaterialTheme.colorScheme.primary
+                        ConfidenceLevel.MEDIUM -> MaterialTheme.colorScheme.tertiary
+                        ConfidenceLevel.LOW -> MaterialTheme.colorScheme.error
+                    }
+                )
+                // 不到「可以放心用」就把最拖后腿的一项指出来，用户知道该去改哪一段
+                if (confidence.level != ConfidenceLevel.HIGH) {
+                    confidence.weakest?.let { factor ->
+                        Text(
+                            text = "最弱环节：${factor.name} —— ${factor.note}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
                 Text(
                     text = "首页 ${report.homeCount} 部 · 章节 ${report.chapterCount} 个 · " +
                         "图片 ${report.imageCount} 张",

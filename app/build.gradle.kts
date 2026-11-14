@@ -38,6 +38,9 @@ android {
     // 识别逻辑是纯 JVM 代码，单元测试里直接连真实站点验证，输出打到控制台
     testOptions {
         unitTests.all {
+            // -DliveSite=... 默认只设到 Gradle 守护进程，fork 出来的测试 JVM 读不到，
+            // 必须显式透传；否则实连测试永远走「跳过」，看起来是通过了
+            it.systemProperty("liveSite", System.getProperty("liveSite") ?: "")
             it.testLogging {
                 showStandardStreams = true
                 events("passed", "failed", "skipped")

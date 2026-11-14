@@ -1,9 +1,18 @@
-package com.example.hellocompose.data.source
+package com.example.hellocompose.engine.autogen
 
 import com.example.hellocompose.data.model.Chapter
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.remote.PageParser
 import com.example.hellocompose.data.remote.UrlResolver
+import com.example.hellocompose.data.source.DetailRule
+import com.example.hellocompose.data.source.Dom
+import com.example.hellocompose.data.source.FieldRule
+import com.example.hellocompose.data.source.ListRule
+import com.example.hellocompose.data.source.ReaderRule
+import com.example.hellocompose.data.source.ScriptData
+import com.example.hellocompose.data.source.ScriptRule
+import com.example.hellocompose.data.source.pickByRule
+import com.example.hellocompose.data.source.readByRule
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document

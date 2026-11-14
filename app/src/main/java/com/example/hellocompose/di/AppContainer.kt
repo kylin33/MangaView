@@ -7,9 +7,10 @@ import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.MangaScraper
 import com.example.hellocompose.data.repository.MangaRepository
 import com.example.hellocompose.data.settings.SettingsRepository
-import com.example.hellocompose.data.source.SourceAutoGenerator
 import com.example.hellocompose.data.source.SourceProbe
 import com.example.hellocompose.data.source.SourceRepository
+import com.example.hellocompose.engine.autogen.SourceAutoGenerator
+import com.example.hellocompose.engine.source.SourceEngine
 
 /**
  * 手动依赖容器。
@@ -35,8 +36,17 @@ class AppContainer(context: Context) {
     /** 与正式抓取共用同一个实例，保证「试抓取」和实际运行行为一致 */
     private val scraper = MangaScraper(httpClient)
 
+    /**
+     * 站点适配引擎。站点特判实现（如果有）在这里注册：
+     * `sourceEngine.register { config -> if (config.id == "xxx") MyCustomSource(config) else null }`
+     */
+    val sourceEngine: SourceEngine = SourceEngine(
+        repository = sourceRepository,
+        scraper = scraper
+    )
+
     val mangaRepository: MangaRepository = MangaRepository(
-        scraper = scraper,
+        engine = sourceEngine,
         sources = sourceRepository
     )
 

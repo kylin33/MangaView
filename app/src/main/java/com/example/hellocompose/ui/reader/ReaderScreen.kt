@@ -94,8 +94,7 @@ fun ReaderScreen(
         factory = viewModelFactory {
             initializer {
                 ReaderViewModel(
-                    initialChapterUrl = chapterUrl,
-                    initialChapterTitle = chapterTitle,
+                    initialChapter = Chapter(chapterTitle, chapterUrl),
                     mangaTitle = mangaTitle,
                     coverUrl = coverUrl,
                     detailUrl = detailUrl,
@@ -110,7 +109,7 @@ fun ReaderScreen(
         }
     )
 
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSwitch by remember { mutableStateOf(false) }
@@ -119,7 +118,7 @@ fun ReaderScreen(
 
     // 加载完成后定位：上次看到的位置优先，没有记录再回顶部
     LaunchedEffect(state.chapterUrl, state.isLoading) {
-        if (!state.isLoading && state.images.isNotEmpty()) {
+        if (!state.isLoading && state.pages.isNotEmpty()) {
             listState.scrollToItem(state.restoreIndex.coerceAtLeast(0))
             viewModel.onRestoreConsumed()
         }
@@ -130,7 +129,7 @@ fun ReaderScreen(
         derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
     }
     LaunchedEffect(lastVisibleIndex) {
-        viewModel.onVisibleIndexChanged(lastVisibleIndex)
+        viewModel.onVisiblePage(lastVisibleIndex)
     }
 
     Scaffold(
@@ -176,7 +175,7 @@ fun ReaderScreen(
                             leadingIcon = {
                                 Icon(Icons.Default.KeyboardArrowUp, contentDescription = null)
                             },
-                            enabled = state.images.isNotEmpty(),
+                            enabled = state.pages.isNotEmpty(),
                             onClick = {
                                 showMenu = false
                                 scope.launch { listState.animateScrollToItem(0) }
@@ -208,10 +207,10 @@ fun ReaderScreen(
             )
         },
         bottomBar = {
-            if (state.images.isNotEmpty()) {
+            if (state.pages.isNotEmpty()) {
                 ReaderStatusBarContent(
                     currentPage = lastVisibleIndex + 1,
-                    totalPages = state.images.size,
+                    totalPages = state.pages.size,
                     preloadCount = state.preloadCount
                 )
             }
@@ -228,10 +227,10 @@ fun ReaderScreen(
 
                 state.error != null -> ErrorView(
                     error = state.error!!,
-                    onRetry = viewModel::load
+                    onRetry = viewModel::retry
                 )
 
-                state.images.isEmpty() -> Text(
+                state.pages.isEmpty() -> Text(
                     text = "本章没有图片",
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.align(Alignment.Center)
@@ -242,14 +241,15 @@ fun ReaderScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     itemsIndexed(
-                        items = state.images,
-                        key = { index, url -> "$index-$url" }
-                    ) { index, imageUrl ->
+                        items = state.pages,
+                        key = { index, page -> "$index-${page.url}" }
+                    ) { index, page ->
                         SubcomposeAsyncImage(
                             model = MangaImageRequests.build(
                                 context = context,
-                                imageUrl = imageUrl,
-                                referer = state.referer.ifBlank { state.chapterUrl }
+                                imageUrl = page.url,
+                                // 每页自带 Referer，引擎已经把站点配置的模板展开好了
+                                referer = page.referer.ifBlank { state.chapterUrl }
                             ),
                             imageLoader = imageLoader,
                             contentDescription = "第 ${index + 1} 页",
@@ -268,7 +268,7 @@ fun ReaderScreen(
                                         CircularProgressIndicator(strokeWidth = 2.dp)
                                         Spacer(Modifier.height(8.dp))
                                         Text(
-                                            text = "${index + 1} / ${state.images.size}",
+                                            text = "${index + 1} / ${state.pages.size}",
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )

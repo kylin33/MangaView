@@ -1,4 +1,4 @@
-package com.example.hellocompose.data.source
+package com.example.hellocompose.engine.autogen
 
 import com.example.hellocompose.core.AppConfig
 import com.example.hellocompose.core.AppResult
@@ -7,6 +7,16 @@ import com.example.hellocompose.core.appRunCatching
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.PageParser
+import com.example.hellocompose.data.source.DetailRule
+import com.example.hellocompose.data.source.Dom
+import com.example.hellocompose.data.source.FieldRule
+import com.example.hellocompose.data.source.ListRule
+import com.example.hellocompose.data.source.ReaderRule
+import com.example.hellocompose.data.source.ScriptData
+import com.example.hellocompose.data.source.SourceConfig
+import com.example.hellocompose.data.source.SourceJson
+import com.example.hellocompose.data.source.SourceParser
+import com.example.hellocompose.data.source.NO_HOME_LIST_SELECTOR
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.HttpStatusException
@@ -43,6 +53,8 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         val searchPath: String? = null,
         /** 站点证书链不完整，识别时放宽了校验，并写进了配置 */
         val relaxedTls: Boolean,
+        /** 这套选择器有多可信。分阶段保留依据，方便回答「哪一步最可疑」 */
+        val confidence: DetectionConfidence,
         val warnings: List<String>
     )
 
@@ -272,7 +284,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         }
     }
 
-    /** 统一收尾：带上自检，保证产物能被正式解析器读回来 */
+    /** 统一收尾：带上自检和置信度，保证产物能被正式解析器读回来 */
     private fun finish(
         config: SourceConfig,
         baseUrl: String,
@@ -283,25 +295,83 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         relaxedTls: Boolean,
         warnings: List<String>
     ): Result {
-        val json = SourceJson.encode(config)
-        SourceParser.parse(json, config.id)
+        // 置信度在编码之前算：它要跟着配置一起落进 JSON，
+        // 以后排查「这份配置当时是怎么来的」不用再靠记忆
+        val confidence = confidenceOf(homeItems, chapterGuess, readerGuess, config.isSearchOnly)
+        val withConfidence = config.copy(confidence = confidence.toSourceConfidence())
+
+        val json = SourceJson.encode(withConfidence)
+        SourceParser.parse(json, withConfidence.id)
 
         return Result(
-            config = config,
+            config = withConfidence,
             json = json,
             report = Report(
                 baseUrl = baseUrl,
-                siteName = config.name,
+                siteName = withConfidence.name,
                 homeCount = homeCount,
                 homeSamples = homeItems.take(3).map { it.title },
                 chapterCount = chapterGuess.items.size,
                 chapterSamples = chapterGuess.items.take(3).map { it.title },
                 imageCount = readerGuess.images.size,
                 imageSamples = readerGuess.images.take(2).map { it.substringAfterLast('/') },
-                searchPath = config.search?.path,
+                searchPath = withConfidence.search?.path,
                 relaxedTls = relaxedTls,
+                confidence = confidence,
                 warnings = warnings
             )
+        )
+    }
+
+    /**
+     * 汇总各阶段的置信度。
+     *
+     * 所有输入都是「已经真实发生的事实」（解析出的条数、填满率、是否打开过第一章），
+     * 不做任何基于页面猜测的加分 —— 猜出来的分数比没有分数更容易误导人。
+     */
+    private fun confidenceOf(
+        homeItems: List<Manga>,
+        chapterGuess: SourceAutoDetector.ChapterGuess,
+        readerGuess: SourceAutoDetector.ReaderGuess,
+        searchOnly: Boolean
+    ): DetectionConfidence {
+        val size = homeItems.size
+        fun ratio(predicate: (Manga) -> Boolean): Double =
+            if (size == 0) 0.0 else homeItems.count(predicate).toDouble() / size
+
+        val chapters = chapterGuess.items
+        // 只有正文图也拿到，「首页 → 目录 → 图片」才算真的打通
+        val downstreamOk = chapters.isNotEmpty() && readerGuess.images.isNotEmpty()
+
+        val home = ConfidenceScorer.home(
+            itemCount = size,
+            titleFilled = ratio { it.title != PageParser.UNTITLED },
+            linkValid = ratio { it.detailUrl.startsWith("http") },
+            coverValid = ratio { it.coverUrl.startsWith("http") },
+            downstreamOk = downstreamOk
+        )
+        val detail = ConfidenceScorer.detail(
+            chapterCount = chapters.size,
+            chapterLikeRatio = chapterGuess.chapterLikeRatio,
+            reachable = readerGuess.images.isNotEmpty()
+        )
+        val images = readerGuess.images
+        val distinct = if (images.isEmpty()) {
+            0.0
+        } else {
+            images.map { it.substringAfterLast('/') }.distinct().size.toDouble() / images.size
+        }
+        val reader = ConfidenceScorer.reader(
+            imageCount = images.size,
+            distinctRatio = distinct,
+            reachable = images.isNotEmpty()
+        )
+
+        return DetectionConfidence(
+            home = home,
+            detail = detail,
+            reader = reader,
+            overall = ConfidenceScorer.overall(home, detail, reader, searchOnly)
         )
     }
 

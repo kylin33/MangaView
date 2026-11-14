@@ -9,7 +9,7 @@ import com.example.hellocompose.core.AppResult
 import com.example.hellocompose.core.ErrorType
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.source.ConfigFetcher
-import com.example.hellocompose.data.source.SourceAutoGenerator
+import com.example.hellocompose.engine.autogen.SourceAutoGenerator
 import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.data.source.SourceConflictException
 import com.example.hellocompose.data.source.SourceOrigin

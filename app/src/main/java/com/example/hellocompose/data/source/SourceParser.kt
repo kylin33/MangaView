@@ -122,7 +122,8 @@ object SourceParser {
                     FieldRule(select = "", attr = "data-original|data-src|src")
                 ),
                 referer = reader.optString("referer", "{pageUrl}")
-            )
+            ),
+            confidence = root.optJSONObject("confidence")?.toConfidence()
         )
 
         validateSelectors(config)
@@ -269,4 +270,15 @@ object SourceParser {
         require(v.isNotBlank()) { "[$id] $node.$key 不能为空" }
         return v
     }
+
+    /**
+     * 置信度是「参考信息」，不是必需字段。
+     * 写坏了也不该让整份配置失效——夹到 0~1 之间继续用，比直接报错合适。
+     */
+    private fun JSONObject.toConfidence(): SourceConfidence = SourceConfidence(
+        overall = optDouble("overall", 0.0).coerceIn(0.0, 1.0),
+        home = optDouble("home", 0.0).coerceIn(0.0, 1.0),
+        detail = optDouble("detail", 0.0).coerceIn(0.0, 1.0),
+        reader = optDouble("reader", 0.0).coerceIn(0.0, 1.0)
+    )
 }
