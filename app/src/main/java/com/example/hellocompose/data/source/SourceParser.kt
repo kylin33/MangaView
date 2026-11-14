@@ -39,6 +39,7 @@ object SourceParser {
           "referer": "{baseUrl}/",
           "timeoutMs": 15000,
           "trustAllCerts": false,
+          "allowPlainHttp": false,
           "home": {
             "path": "/",
             "item": "div.comic-item",
@@ -85,6 +86,13 @@ object SourceParser {
         val baseUrl = root.optString("baseUrl").trim().trimEnd('/')
         require(baseUrl.startsWith("http")) { "[$id] baseUrl 必须以 http:// 或 https:// 开头" }
 
+        val allowPlainHttp = root.optBoolean("allowPlainHttp", false)
+        // 明文 HTTP 不是"能用就行"的降级，必须由配置所有者明确写下这一行
+        require(!baseUrl.startsWith("http://", ignoreCase = true) || allowPlainHttp) {
+            "[$id] baseUrl 是明文 HTTP，但没有显式声明 \"allowPlainHttp\": true。" +
+                "明文连接可被链路上任何人读取和篡改，确认要用的话请自己加上这一项"
+        }
+
         val home = root.optJSONObject("home")
             ?: throw IllegalArgumentException("[$id] 缺少 home 节点，无法抓首页列表")
         val detail = root.optJSONObject("detail")
@@ -104,6 +112,7 @@ object SourceParser {
                 .coerceIn(3_000L, 60_000L),
             referer = root.optString("referer", "{baseUrl}/"),
             trustAllCerts = root.optBoolean("trustAllCerts", false),
+            allowPlainHttp = allowPlainHttp,
             home = home.toListRule(id, "home"),
             search = root.optJSONObject("search")?.toListRule(id, "search"),
             detail = DetailRule(

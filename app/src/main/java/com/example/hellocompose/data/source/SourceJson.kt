@@ -24,6 +24,12 @@ object SourceJson {
         root.put("referer", config.referer)
         root.put("timeoutMs", config.timeoutMs)
         root.put("trustAllCerts", config.trustAllCerts)
+        root.put("allowPlainHttp", config.allowPlainHttp)
+        // 例外必须自带说明：这份 JSON 会被复制、分享、贴给别人，
+        // 只写一个 true 而不写代价，下一个人就当成普通开关打开了
+        if (config.securityWarnings.isNotEmpty()) {
+            root.put("securityWarning", config.securityWarnings.joinToString("；"))
+        }
 
         // 置信度只对自动识别出来的配置有意义，手写的配置不写这个节点，
         // 免得让人以为「没有置信度就是不可信」

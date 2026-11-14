@@ -1,13 +1,12 @@
 package com.example.hellocompose.ui.reader
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import coil.ImageLoader
 import com.example.hellocompose.core.AppResult
 import com.example.hellocompose.data.history.HistoryRepository
 import com.example.hellocompose.data.history.ReadingRecord
 import com.example.hellocompose.data.image.CoilPagePreloader
+import com.example.hellocompose.data.image.ImageRequestManager
 import com.example.hellocompose.data.model.Chapter
 import com.example.hellocompose.data.repository.MangaRepository
 import com.example.hellocompose.data.settings.SettingsRepository
@@ -40,13 +39,12 @@ class ReaderViewModel(
     private val sources: SourceRepository,
     private val settings: SettingsRepository,
     private val history: HistoryRepository,
-    context: Context,
-    imageLoader: ImageLoader
+    images: ImageRequestManager
 ) : ViewModel() {
 
     private val engine = ReadingEngine(
         loader = PageLoader { chapterUrl -> repository.getPages(chapterUrl) },
-        preloader = CoilPagePreloader(context.applicationContext, imageLoader),
+        preloader = CoilPagePreloader(images),
         initialChapter = initialChapter,
         scope = viewModelScope,
         positionListener = PositionListener { chapter, page, pageCount ->

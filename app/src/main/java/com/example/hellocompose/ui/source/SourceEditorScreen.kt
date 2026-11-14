@@ -53,6 +53,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.hellocompose.data.source.ConfidenceLevel
+import com.example.hellocompose.engine.autogen.InsecureRequest
 import com.example.hellocompose.ui.LocalAppContainer
 
 /**
@@ -154,8 +155,15 @@ fun SourceEditorScreen(
                     state = state.auto,
                     enabled = !state.busy,
                     onUrlChange = viewModel::onAutoUrlChange,
-                    onRun = viewModel::runAutoDetect
+                    onRun = viewModel::runAutoDetect,
+                    onConfirmInsecure = viewModel::confirmInsecure,
+                    onCancelInsecure = viewModel::cancelInsecure
                 )
+
+                // 当前配置里若带着安全例外，保存前就要看见：这类配置容易被复制给别人
+                state.parsed?.securityWarnings?.takeIf { it.isNotEmpty() }?.let { warnings ->
+                    SecurityExceptionBanner(warnings = warnings)
+                }
 
                 Text(
                     text = "识别完可以直接保存；也可以从别处导入一份调好的 JSON，或手动改下面的选择器。",
@@ -423,8 +431,47 @@ private fun AutoDetectPanel(
     state: AutoUiState,
     enabled: Boolean,
     onUrlChange: (String) -> Unit,
-    onRun: () -> Unit
+    onRun: () -> Unit,
+    onConfirmInsecure: () -> Unit,
+    onCancelInsecure: () -> Unit
 ) {
+    // 证书问题不自动处理：把证据摊开，用户自己决定。默认按钮是「取消」，
+    // 手滑点两下不会顺手把校验关掉
+    state.confirm?.let { request ->
+        AlertDialog(
+            onDismissRequest = onCancelInsecure,
+            title = { Text(request.message) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = request.detail,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "继续后，这份配置会一直带着这个例外，直到你手动删掉它。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onConfirmInsecure) {
+                    Text(
+                        text = if (request.kind == InsecureRequest.Kind.CERT_INVALID) {
+                            "仍然关闭证书校验"
+                        } else {
+                            "仍然用明文 HTTP"
+                        },
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onCancelInsecure) { Text("取消") }
+            }
+        )
+    }
+
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         shape = MaterialTheme.shapes.medium,
@@ -541,6 +588,39 @@ private fun AutoDetectPanel(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 配置里存在安全例外时的常驻提示。
+ *
+ * 单独做一块而不是混在普通说明里：`trustAllCerts` / `allowPlainHttp` 一旦为 true，
+ * 内容就处在"可能被看见、可能被改写"的状态，这种信息不该长得像一句配置注解。
+ */
+@Composable
+private fun SecurityExceptionBanner(warnings: List<String>) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "这份配置降低了连接安全性",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            warnings.forEach { warning ->
+                Text(
+                    text = warning,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
             }
         }
     }

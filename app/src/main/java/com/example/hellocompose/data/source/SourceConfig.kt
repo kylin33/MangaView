@@ -112,7 +112,16 @@ data class SourceConfig(
     val userAgent: String = AppConfig.USER_AGENT,
     val timeoutMs: Long = AppConfig.TIMEOUT_MS,
     val referer: String = "{baseUrl}/",
+    /**
+     * 关闭证书校验。**这是显式例外，不是默认行为**：只有用户在识别阶段
+     * 看过证书错误详情后点过「仍然继续」才会为 true，UI 必须给出醒目警告。
+     */
     val trustAllCerts: Boolean = false,
+    /**
+     * 允许以明文 HTTP 访问。默认 false，任何 http 地址都会被拦下。
+     * 同样只有在用户确认过「该站点不支持 HTTPS」之后才会被写入。
+     */
+    val allowPlainHttp: Boolean = false,
     val home: ListRule,
     val search: ListRule? = null,
     val detail: DetailRule,
@@ -141,6 +150,16 @@ data class SourceConfig(
             else -> baseUrl.trimEnd('/') + "/" + p
         }
     }
+
+    /**
+     * 这份配置里的安全例外。非空就意味着"内容可能被第三方看到或改写"，
+     * 界面上必须显示成警告而不是普通说明。
+     */
+    val securityWarnings: List<String>
+        get() = buildList {
+            if (trustAllCerts) add("已关闭证书校验（trustAllCerts=true）：无法防范中间人，页面和图片都可能被篡改")
+            if (allowPlainHttp) add("允许明文 HTTP（allowPlainHttp=true）：链路上的任何人都能读取和修改内容")
+        }
 
     /** 展开模板占位符 */
     fun expand(template: String, pageUrl: String = ""): String =

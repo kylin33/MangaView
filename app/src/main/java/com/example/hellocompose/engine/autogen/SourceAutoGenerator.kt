@@ -1,12 +1,14 @@
 package com.example.hellocompose.engine.autogen
 
 import com.example.hellocompose.core.AppConfig
-import com.example.hellocompose.core.AppResult
+import com.example.hellocompose.core.AppError
 import com.example.hellocompose.core.EmptyPageException
-import com.example.hellocompose.core.appRunCatching
+import com.example.hellocompose.core.toAppError
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.PageParser
+import com.example.hellocompose.data.remote.TlsException
+import com.example.hellocompose.data.remote.TlsProblem
 import com.example.hellocompose.data.source.DetailRule
 import com.example.hellocompose.data.source.Dom
 import com.example.hellocompose.data.source.FieldRule
@@ -17,10 +19,12 @@ import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.data.source.SourceJson
 import com.example.hellocompose.data.source.SourceParser
 import com.example.hellocompose.data.source.NO_HOME_LIST_SELECTOR
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.HttpStatusException
 import org.jsoup.nodes.Document
+import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 
@@ -33,8 +37,9 @@ import java.net.URLEncoder
  * 三个设计原则：
  * 1. **必须真连真抓**。识别只靠静态 HTML，站点结构再规范也可能被 JS 渲染或反爬拦住，
  *    所以任何一步失败都要如实告诉用户，而不是生成一份看起来完整、实际抓不到东西的配置。
- * 2. **降级但不放弃**。证书链不全、只支持 http 的站点很常见，依次尝试
- *    https → https(放宽证书) → http → http(放宽证书)，成功的那次参数会被写进配置。
+ * 2. **不安全连接绝不自动降级**。以前这里会依次尝试 https → https(放宽证书) → http →
+ *    http(放宽证书)，把中间人攻击的入口开在了最常走的失败路径上。现在只走严格 HTTPS，
+ *    一旦证书不可信或站点根本不支持 HTTPS，就把证据和选择权交回用户（[Outcome.NeedsConfirmation]）。
  * 3. **产物要能自检**。生成的 JSON 会再走一遍 [SourceParser]，确保用户保存时不会遇到
  *    在识别阶段没暴露出来的格式问题。
  */
@@ -51,8 +56,8 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         val imageSamples: List<String>,
         /** 是否推出了可用的搜索地址 */
         val searchPath: String? = null,
-        /** 站点证书链不完整，识别时放宽了校验，并写进了配置 */
-        val relaxedTls: Boolean,
+        /** 非空表示这份配置带着用户确认过的安全例外，界面必须醒目提示 */
+        val insecure: InsecurePolicy?,
         /** 这套选择器有多可信。分阶段保留依据，方便回答「哪一步最可疑」 */
         val confidence: DetectionConfidence,
         val warnings: List<String>
@@ -64,18 +69,40 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         val report: Report
     )
 
-    suspend fun generate(
-        input: String,
-        onStep: (String) -> Unit = {}
-    ): AppResult<Result> = appRunCatching {
-        withContext(Dispatchers.IO) { detect(input, onStep) }
+    /**
+     * 识别结果。
+     *
+     * 比 `AppResult` 多一种状态：[NeedsConfirmation]。证书问题不是"失败"——
+     * 用户可能有正当理由（自己的站点用自签证书），系统不该替他决定，
+     * 也不该把这件事混进"重试"里。
+     */
+    sealed interface Outcome {
+        data class Success(val result: Result) : Outcome
+        data class NeedsConfirmation(val request: InsecureRequest) : Outcome
+        data class Failed(val error: AppError) : Outcome
     }
 
-    private fun detect(input: String, onStep: (String) -> Unit): Result {
+    suspend fun generate(
+        input: String,
+        policy: InsecurePolicy = InsecurePolicy.STRICT,
+        onStep: (String) -> Unit = {}
+    ): Outcome = withContext(Dispatchers.IO) {
+        try {
+            Outcome.Success(detect(input, policy, onStep))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: InsecureRequiredException) {
+            Outcome.NeedsConfirmation(e.request)
+        } catch (e: Exception) {
+            Outcome.Failed(e.toAppError())
+        }
+    }
+
+    private fun detect(input: String, policy: InsecurePolicy, onStep: (String) -> Unit): Result {
         val (baseUrl, path) = normalize(input)
         onStep("打开首页")
 
-        val (homeDoc, resolvedBase, relaxedTls) = loadHome(baseUrl, path, onStep)
+        val (homeDoc, resolvedBase, activePolicy) = loadHome(baseUrl, path, policy, onStep)
         val warnings = mutableListOf<String>()
 
         val homeGuesses = SourceAutoDetector.detectHome(homeDoc, resolvedBase)
@@ -86,17 +113,17 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         // 前提是目录和图片必须真的能抓 —— 否则就是给用户一个空壳配置。
         if (homeGuesses.isEmpty()) {
             onStep("首页没找到列表，试试搜索")
-            val entry = detectSearchEntry(homeDoc, resolvedBase, relaxedTls, onStep)
+            val entry = detectSearchEntry(homeDoc, resolvedBase, activePolicy, onStep)
                 ?: throw EmptyPageException(
                     "首页没有可用的漫画列表，站内搜索也拿不到结果。" +
                         "这个站点的内容可能完全由脚本动态渲染，当前版本抓不到"
                 )
 
-            val chapterGuess = detectChapterStage(entry.items.map { it.detailUrl }, resolvedBase, relaxedTls, onStep)
-            val readerGuess = detectReaderStage(chapterGuess.items.first().url, resolvedBase, relaxedTls, onStep)
+            val chapterGuess = detectChapterStage(entry.items.map { it.detailUrl }, resolvedBase, activePolicy, onStep)
+            val readerGuess = detectReaderStage(chapterGuess.items.first().url, resolvedBase, activePolicy, onStep)
 
             warnings += NO_HOME_LIST_HINT
-            if (relaxedTls) warnings += "站点证书不完整，已自动放宽校验（trustAllCerts=true）"
+            warnings += activePolicy.warnings
 
             val host = SourceAutoDetector.hostOf(resolvedBase) ?: "site"
             val config = SourceConfig(
@@ -108,7 +135,8 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
                 userAgent = AppConfig.USER_AGENT,
                 timeoutMs = AppConfig.TIMEOUT_MS,
                 referer = "{baseUrl}/",
-                trustAllCerts = relaxedTls,
+                trustAllCerts = activePolicy.trustAllCerts,
+                allowPlainHttp = activePolicy.allowPlainHttp,
                 // 首页给一个永不匹配的选择器：抓不到内容，但节点合法，
                 // App 首页会走空状态，引导用户去搜索
                 home = ListRule(path = path, item = NO_LIST_SELECTOR),
@@ -116,7 +144,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
                 detail = chapterGuess.rule,
                 reader = readerGuess.rule
             )
-            return finish(config, resolvedBase, 0, emptyList(), chapterGuess, readerGuess, relaxedTls, warnings)
+            return finish(config, resolvedBase, 0, emptyList(), chapterGuess, readerGuess, activePolicy, warnings)
         }
 
         val homeGuess = homeGuesses.first()
@@ -131,7 +159,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         onStep("首页识别到 ${finalHome.items.size} 部作品")
 
         // ---- 搜索：试几个常见的搜索地址，能用就写进配置 ----
-        val searchRule = detectSearch(finalHome, effectiveBase, relaxedTls, onStep)
+        val searchRule = detectSearch(finalHome, effectiveBase, activePolicy, onStep)
 
         // ---- 详情页：找章节列表 ----
         val detailUrls = finalHome.items.map { it.detailUrl }.filter { it.startsWith("http") }
@@ -139,15 +167,13 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
             throw EmptyPageException("首页作品没有可用的详情页链接，无法继续验证目录")
         }
 
-        val chapterGuess = detectChapterStage(detailUrls, effectiveBase, relaxedTls, onStep)
-        val readerGuess = detectReaderStage(chapterGuess.items.first().url, effectiveBase, relaxedTls, onStep)
+        val chapterGuess = detectChapterStage(detailUrls, effectiveBase, activePolicy, onStep)
+        val readerGuess = detectReaderStage(chapterGuess.items.first().url, effectiveBase, activePolicy, onStep)
 
         if (finalHome.items.size < 8) {
             warnings += "首页只识别到 ${finalHome.items.size} 部作品，列表可能不完整"
         }
-        if (relaxedTls) {
-            warnings += "站点证书不完整，已自动放宽校验（trustAllCerts=true）"
-        }
+        warnings += activePolicy.warnings
 
         val host = SourceAutoDetector.hostOf(effectiveBase) ?: "site"
         val config = SourceConfig(
@@ -159,7 +185,8 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
             userAgent = AppConfig.USER_AGENT,
             timeoutMs = AppConfig.TIMEOUT_MS,
             referer = "{baseUrl}/",
-            trustAllCerts = relaxedTls,
+            trustAllCerts = activePolicy.trustAllCerts,
+            allowPlainHttp = activePolicy.allowPlainHttp,
             home = finalHome.rule.copy(path = path),
             search = searchRule,
             detail = chapterGuess.rule,
@@ -167,7 +194,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         )
         return finish(
             config, effectiveBase, finalHome.items.size, finalHome.items,
-            chapterGuess, readerGuess, relaxedTls, warnings
+            chapterGuess, readerGuess, activePolicy, warnings
         )
     }
 
@@ -180,7 +207,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     private fun detectChapterStage(
         detailUrls: List<String>,
         baseUrl: String,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
     ): SourceAutoDetector.ChapterGuess {
         var lastError: Exception? = null
@@ -188,7 +215,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         // 详情页可能就是空的。换一部再试，最多试 3 部
         for (detailUrl in detailUrls.take(3)) {
             try {
-                return detectChaptersFor(detailUrl, baseUrl, relaxedTls, onStep)
+                return detectChaptersFor(detailUrl, baseUrl, policy, onStep)
             } catch (e: Exception) {
                 lastError = e
             }
@@ -206,11 +233,11 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     private fun detectChaptersFor(
         detailUrl: String,
         baseUrl: String,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
     ): SourceAutoDetector.ChapterGuess {
         onStep("打开详情页")
-        val detailDoc = fetch(detailUrl, "$baseUrl/", relaxedTls)
+        val detailDoc = fetch(detailUrl, "$baseUrl/", policy)
 
         SourceAutoDetector.detectChapters(detailDoc, baseUrl).firstOrNull()?.let { guess ->
             onStep("识别到 ${guess.items.size} 个章节")
@@ -226,7 +253,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         for (guess in scriptGuesses) {
             // 地址模板是猜出来的，必须真的能打开第一章、并且抓得到图才算数
             val reachable = runCatching {
-                val doc = fetch(guess.items.first().url, detailUrl, relaxedTls)
+                val doc = fetch(guess.items.first().url, detailUrl, policy)
                 SourceAutoDetector.detectReaders(doc, baseUrl).any { it.images.isNotEmpty() }
             }.getOrDefault(false)
             if (!reachable) continue
@@ -250,12 +277,12 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     private fun detectReaderStage(
         chapterUrl: String,
         baseUrl: String,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
     ): SourceAutoDetector.ReaderGuess {
         onStep("打开第一章")
         // Referer 用章节页自身：多数防盗链站点校验的是同源
-        val chapterDoc = fetch(chapterUrl, chapterUrl, relaxedTls)
+        val chapterDoc = fetch(chapterUrl, chapterUrl, policy)
         val guess = SourceAutoDetector.detectReaders(chapterDoc, baseUrl).firstOrNull()
             ?.takeIf { it.images.isNotEmpty() }
             ?: throw EmptyPageException(readerFailureReason(chapterDoc))
@@ -292,7 +319,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         homeItems: List<Manga>,
         chapterGuess: SourceAutoDetector.ChapterGuess,
         readerGuess: SourceAutoDetector.ReaderGuess,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         warnings: List<String>
     ): Result {
         // 置信度在编码之前算：它要跟着配置一起落进 JSON，
@@ -316,7 +343,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
                 imageCount = readerGuess.images.size,
                 imageSamples = readerGuess.images.take(2).map { it.substringAfterLast('/') },
                 searchPath = withConfidence.search?.path,
-                relaxedTls = relaxedTls,
+                insecure = policy.takeIf { !it.isStrict },
                 confidence = confidence,
                 warnings = warnings
             )
@@ -385,7 +412,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     private fun detectSearchEntry(
         homeDoc: Document,
         baseUrl: String,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
     ): SearchEntry? {
         val name = siteName(homeDoc, SourceAutoDetector.hostOf(baseUrl) ?: "")
@@ -400,7 +427,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
 
         for (template in SEARCH_PATHS) {
             for (probe in probes) {
-                val attempt = searchOnce(template, probe, null, minSize = 2, baseUrl, relaxedTls)
+                val attempt = searchOnce(template, probe, null, minSize = 2, baseUrl, policy)
                 // 关键词在最终地址里没保住 → 该参数不被支持，返回的是默认列表
                 if (!attempt.fetched || !attempt.keywordKept) continue
                 val entry = attempt.entry ?: continue
@@ -411,7 +438,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
                 // 很多站对不认识的参数直接返回热门列表，那页面和真实结果长得完全一样。
                 val echo = probeKeyword(entry.items.getOrNull(1)?.title.orEmpty())
                 if (echo.isNotBlank() && echo != probe) {
-                    val verdict = keywordVerdict(template, echo, entry.items, null, baseUrl, relaxedTls)
+                    val verdict = keywordVerdict(template, echo, entry.items, null, baseUrl, policy)
                     // 证明不了关键词生效就不写进配置：宁可没有搜索，也不要一个永远返回热门列表的假搜索
                     if (verdict != KeywordVerdict.MATTERS) continue
                 }
@@ -484,7 +511,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     private fun detectSearch(
         home: SourceAutoDetector.HomeGuess,
         baseUrl: String,
-        relaxedTls: Boolean,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
     ): ListRule? {
         val first = home.items.getOrNull(0)?.title?.trim().orEmpty()
@@ -501,7 +528,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
             !keywordB.contains(keywordA.take(3)) && !keywordA.contains(keywordB.take(3))
 
         for (template in SEARCH_PATHS) {
-            val attemptA = searchOnce(template, keywordA, home, minSize = 1, baseUrl, relaxedTls)
+            val attemptA = searchOnce(template, keywordA, home, minSize = 1, baseUrl, policy)
             if (!attemptA.fetched) {
                 onStep("跳过 $template：打不开")
                 continue
@@ -524,7 +551,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
                 continue
             }
 
-            val verdict = if (canCompare) keywordVerdict(template, keywordB, itemsA, home, baseUrl, relaxedTls)
+            val verdict = if (canCompare) keywordVerdict(template, keywordB, itemsA, home, baseUrl, policy)
             else KeywordVerdict.UNKNOWN
 
             val hitTarget = itemsA.any { it.detailUrl in homeUrls }
@@ -564,9 +591,9 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         itemsA: List<Manga>,
         home: SourceAutoDetector.HomeGuess?,
         baseUrl: String,
-        relaxedTls: Boolean
+        policy: InsecurePolicy
     ): KeywordVerdict {
-        val attemptB = searchOnce(template, keywordB, home, minSize = 1, baseUrl, relaxedTls)
+        val attemptB = searchOnce(template, keywordB, home, minSize = 1, baseUrl, policy)
         // 请求没成功 ≠ 关键字无效：这两种情况必须分开，否则会把真搜索判成假的
         if (!attemptB.fetched || !attemptB.keywordKept) return KeywordVerdict.UNKNOWN
 
@@ -583,11 +610,11 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         home: SourceAutoDetector.HomeGuess?,
         minSize: Int,
         baseUrl: String,
-        relaxedTls: Boolean
+        policy: InsecurePolicy
     ): SearchAttempt {
         val encoded = URLEncoder.encode(keyword, "UTF-8")
         val pageUrl = baseUrl + template.replace("{keyword}", encoded)
-        val doc = runCatching { fetch(pageUrl, "$baseUrl/", relaxedTls) }.getOrNull()
+        val doc = runCatching { fetch(pageUrl, "$baseUrl/", policy) }.getOrNull()
             ?: return SearchAttempt(null, keywordKept = false, fetched = false)
 
         // 最终的 URL 里还得留着关键词。
@@ -671,46 +698,105 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
     // ==================== 请求 ====================
 
     /**
-     * 打开首页。按 https → https 放宽证书 → http → http 放宽证书 依次尝试。
-     * 成功的那次的方案（scheme / 是否放宽）会写进配置，保证正式抓取和识别时一致。
+     * 打开首页。**只走严格 HTTPS**，走不通时把「为什么走不通」交回给用户。
+     *
+     * 旧实现按 https → https(放宽证书) → http → http(放宽证书) 依次尝试，等于在任何一次
+     * 证书异常上自动把校验关掉；甚至一个 502 都能让后续所有请求落到明文 HTTP。
+     * 现在：
+     * - 证书不可信 → 抛 [InsecureRequiredException]，带上证书详情，等用户确认；
+     * - 站点不支持 HTTPS（443 上不讲 TLS / 连不上）→ 先探测明文 HTTP 是否可用，
+     *   可用才提示用户「只能明文访问」，绝不自己切过去；
+     * - 用户确认过策略后（policy 非严格），才按确认的方式连接。
+     *
+     * 返回的 policy 就是写进配置的那一份，保证正式抓取和识别走同一条路。
      */
     private fun loadHome(
         baseUrl: String,
         path: String,
+        policy: InsecurePolicy,
         onStep: (String) -> Unit
-    ): Triple<Document, String, Boolean> {
+    ): Triple<Document, String, InsecurePolicy> {
         val host = baseUrl.substringAfter("://")
         val pathPart = if (path.startsWith("/")) path else "/$path"
-        val referer = "https://$host/"
+        val httpsUrl = "https://$host$pathPart"
+        val httpUrl = "http://$host$pathPart"
 
-        val strategies = listOf(
-            Triple("https://$host$pathPart", false, "HTTPS"),
-            Triple("https://$host$pathPart", true, "HTTPS，放宽证书校验"),
-            Triple("http://$host$pathPart", false, "HTTP"),
-            Triple("http://$host$pathPart", true, "HTTP，放宽证书校验")
-        )
-
-        var lastError: Exception? = null
-        var statusError: HttpStatusException? = null
-
-        for ((url, relax, label) in strategies) {
-            try {
-                val doc = http.get(url = url, referer = referer, trustAllCerts = relax)
-                onStep("已连接（$label）")
-                // 以页面最终落地的地址为准。
-                // 很多站把 http 301 到 https（也有反过来的），如果这里还用请求时的 scheme，
-                // 后面每个相对地址都要再跳一次，偶尔跳转失败就会表现成"首页能开、搜索打不开"。
-                return Triple(doc, landedBase(doc, url, host), relax)
-            } catch (e: HttpStatusException) {
-                statusError = e
-                lastError = e
-            } catch (e: Exception) {
-                lastError = e
-            }
+        // 用户已经确认过：按确认的方式连，不再偷偷先试别的
+        if (!policy.isStrict) {
+            val url = if (policy.allowPlainHttp) httpUrl else httpsUrl
+            val label = if (policy.allowPlainHttp) "明文 HTTP（已确认）" else "HTTPS，已确认放宽证书"
+            val doc = fetch(url, "${url.substringBefore("://")}://$host/", policy)
+            onStep("已连接（$label）")
+            return Triple(doc, landedBase(doc, url, host), policy)
         }
 
-        statusError?.let { throw blockedMessage(it) }
-        throw lastError ?: IllegalStateException("无法打开站点")
+        try {
+            val doc = http.get(url = httpsUrl, referer = "https://$host/")
+            onStep("已连接（HTTPS）")
+            // 以页面最终落地的地址为准。
+            // 很多站把 http 301 到 https（也有反过来的），如果这里还用请求时的 scheme，
+            // 后面每个相对地址都要再跳一次，偶尔跳转失败就会表现成"首页能开、搜索打不开"。
+            return Triple(doc, landedBase(doc, httpsUrl, host), policy)
+        } catch (e: HttpStatusException) {
+            // 状态码是站点给出的答复，不是协议问题，绝不能拿它当降级到 http 的理由
+            throw blockedMessage(e)
+        } catch (e: TlsException) {
+            // 证书不可信：不自动放宽，也不自动降级
+            // 「不是 TLS」和「握手就断了」这两种，很可能只是这个站点根本不提供 HTTPS
+            // （例如 443 上跑着明文服务），先确认明文通不通，再把结论告诉用户
+            val maybeNoTls = e.problem == TlsProblem.NOT_TLS || e.problem == TlsProblem.HANDSHAKE_FAILED
+            if (maybeNoTls && httpReachable(httpUrl)) {
+                throw InsecureRequiredException(plainHttpRequest(host, tls = e))
+            }
+            throw InsecureRequiredException(certRequest(host, e))
+        } catch (e: IOException) {
+            // 443 根本没通（站点只监听 80、或者被拦）。同样不自己切，
+            // 先确认明文能不能用，再让用户决定
+            if (httpReachable(httpUrl)) throw InsecureRequiredException(plainHttpRequest(host, tls = null))
+            throw e
+        }
+    }
+
+    /**
+     * 探测明文 HTTP 是否可用。
+     *
+     * **只用于判断，内容一律丢弃**：用户还没同意以明文访问，这里拿到的页面不能当成数据用；
+     * 确认之后会按策略重新取一次。
+     */
+    private fun httpReachable(url: String): Boolean = runCatching {
+        http.get(url = url, referer = "", allowPlainHttp = true)
+        true
+    }.getOrDefault(false)
+
+    private fun certRequest(host: String, e: TlsException): InsecureRequest {
+        val detail = buildString {
+            append(e.detailText)
+            append("\n\n").append(e.problem.advice)
+            append("\n\n继续的话，App 会只对这个站点关闭证书校验：内容可能被第三方看到或篡改。")
+        }
+        return InsecureRequest(
+            kind = InsecureRequest.Kind.CERT_INVALID,
+            host = host,
+            message = e.userMessage,
+            detail = detail,
+            policy = InsecurePolicy(trustAllCerts = true)
+        )
+    }
+
+    private fun plainHttpRequest(host: String, tls: TlsException?): InsecureRequest {
+        val detail = buildString {
+            append("站点：").append(host).append('\n')
+            if (tls != null) append("HTTPS 失败原因：").append(tls.problem.title).append('\n')
+            append("这个站点没有提供可用的 HTTPS，但明文 HTTP 是通的。\n")
+            append("继续访问意味着：链路上的任何人都能看到你在看什么，也能替换页面和图片的内容。")
+        }
+        return InsecureRequest(
+            kind = InsecureRequest.Kind.HTTPS_UNSUPPORTED,
+            host = host,
+            message = "「$host」不支持 HTTPS，只能以明文访问",
+            detail = detail,
+            policy = InsecurePolicy(allowPlainHttp = true)
+        )
     }
 
     /** 从响应最终地址里取出 «scheme://host»，取不到就退回请求时用的那个 */
@@ -723,10 +809,15 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         return if (hostPart.isBlank()) "${requestedUrl.substringBefore("://")}://$host" else "$scheme://$hostPart"
     }
 
-    private fun fetch(url: String, referer: String, relaxedTls: Boolean): Document =
+    private fun fetch(url: String, referer: String, policy: InsecurePolicy): Document =
         try {
             // 5xx/超时的重试在 JsoupHttpClient 里统一做，这里只负责把错误翻译成人话
-            http.get(url = url, referer = referer, trustAllCerts = relaxedTls)
+            http.get(
+                url = url,
+                referer = referer,
+                trustAllCerts = policy.trustAllCerts,
+                allowPlainHttp = policy.allowPlainHttp
+            )
         } catch (e: HttpStatusException) {
             throw blockedMessage(e)
         }

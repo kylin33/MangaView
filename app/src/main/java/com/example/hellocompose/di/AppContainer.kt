@@ -3,6 +3,8 @@ package com.example.hellocompose.di
 import android.content.Context
 import coil.ImageLoader
 import com.example.hellocompose.data.history.HistoryRepository
+import com.example.hellocompose.data.image.ImageRequestManager
+import com.example.hellocompose.data.image.MangaImageLoader
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.MangaScraper
 import com.example.hellocompose.data.repository.MangaRepository
@@ -57,7 +59,11 @@ class AppContainer(context: Context) {
     val sourceAutoGenerator: SourceAutoGenerator = SourceAutoGenerator(httpClient)
 
     /** 全局唯一的 Coil 实例，内存与磁盘缓存共享，预加载和展示用同一个 */
-    val imageLoader: ImageLoader = ImageLoader.Builder(appContext)
-        .crossfade(true)
-        .build()
+    val imageLoader: ImageLoader = MangaImageLoader.create(appContext)
+
+    /**
+     * 图片请求层。阅读页拿它出请求、预加载也拿它出请求，
+     * 两边同源才不会出现「预加载下一章，翻过去还是白屏」。
+     */
+    val imageRequests: ImageRequestManager = ImageRequestManager(appContext, imageLoader)
 }

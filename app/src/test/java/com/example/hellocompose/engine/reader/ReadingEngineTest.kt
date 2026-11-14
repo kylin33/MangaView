@@ -131,6 +131,50 @@ class ReadingEngineTest {
         assertTrue(preloaded.isEmpty())
     }
 
+    @Test
+    fun chapterSwitchReleasesPagesOfPreviousChapter() = runBlocking {
+        val retained = mutableListOf<List<String>>()
+        val preloader = object : PagePreloader {
+            override fun preload(page: Page) = Unit
+            override fun retainOnly(urls: Collection<String>) {
+                retained += urls.toList()
+            }
+        }
+        val engine = newEngine(
+            loader = { url -> AppResult.Success(pagesOf(url, 3)) },
+            preloader = preloader
+        )
+        engine.start()
+        engine.state.first { !it.isLoading }
+        engine.updateChapters(chapters)
+
+        engine.openNext()
+        engine.state.first { !it.isLoading && it.chapterUrl == "/c/2" }
+
+        // 每章加载完都告诉图片层「现在只剩这几页」：旧章节的请求和位图才能及时让位，
+        // 否则长图会跟着章节一直堆在内存里
+        assertEquals(listOf("/c/1/p0", "/c/1/p1", "/c/1/p2"), retained[0])
+        assertEquals(listOf("/c/2/p0", "/c/2/p1", "/c/2/p2"), retained[1])
+    }
+
+    @Test
+    fun blankRefererFallsBackToChapterUrl() = runBlocking {
+        val preloadedReferers = mutableListOf<String>()
+        val engine = newEngine(
+            loader = { url -> AppResult.Success((0 until 4).map { Page(it, "$url/p$it") }) },
+            preloader = { page -> preloadedReferers += page.referer }
+        )
+
+        engine.start()
+        val state = engine.state.first { !it.isLoading }
+
+        // 站点没配 Referer：用章节页兜底，且预加载拿到的请求头必须和展示一致，
+        // 否则预载下来的图对显示那条请求毫无帮助
+        assertTrue(state.pages.all { it.referer == "/c/1" })
+        assertTrue(preloadedReferers.isNotEmpty())
+        assertTrue(preloadedReferers.all { it == "/c/1" })
+    }
+
     // ---------------- 工具 ----------------
 
     private suspend fun newEngine(

@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+        明文 HTTP 的闸门放在应用层：JsoupHttpClient 会拦下所有未授权的 http 请求，
+        只有配置里显式写了 allowPlainHttp: true（用户确认过）才放行。
+        系统这层只决定"进程有没有可能发明文包"，不能区分是哪个站点，
+        所以它开着，真正的判断由上面的应用层策略做。
+    -->
     <application
         android:name=".MangaApp"
         android:allowBackup="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.HelloCompose">
 
         <activity

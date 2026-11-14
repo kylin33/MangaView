@@ -59,12 +59,22 @@ fun ErrorView(
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(8.dp))
+            // 证书错误可能有好几行（域名 / 主体 / 签发者 / 有效期），用 bodySmall 才读得下去
             Text(
                 text = error.detail,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+            error.hint?.let { hint ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
+                )
+            }
             Spacer(Modifier.height(20.dp))
             Button(onClick = onRetry) {
                 Text("重试")

@@ -57,9 +57,17 @@ fun interface PageLoader {
     suspend fun load(chapterUrl: String): AppResult<List<Page>>
 }
 
-/** 预加载。实现方通常是图片加载库（Coil），引擎只负责决定「预哪几页」 */
+/**
+ * 预加载。实现方通常是图片加载库（Coil），引擎只负责决定「预哪几页」。
+ *
+ * [retainOnly] 是「释放」那一半：切章时引擎告诉实现方现在只剩哪些页面需要，
+ * 具体是取消请求还是清缓存由图片层决定——引擎不碰缓存，也就不会绑死在某套缓存实现上。
+ */
 fun interface PagePreloader {
     fun preload(page: Page)
+
+    /** 切章后调用。默认空实现，纯预加载的实现方可以不管 */
+    fun retainOnly(urls: Collection<String>) {}
 }
 
 /**
@@ -81,6 +89,7 @@ fun interface PositionListener {
  * 职责：
  * - **页面加载与调度**：切章时取消上一章的加载，避免旧响应覆盖新章节；
  * - **预加载窗口**：可见页之后 N 页入队，调到最末页不会越界；
+ * - **跨章释放**：切章时把「只需要这几页」告诉预加载方，旧章节的请求和位图及时放掉；
  * - **位置管理**：恢复上次页码（只用一次）、停稳后防抖落盘；
  * - **章节切换**：持有正序目录，上一章/下一章在内部完成，不回到目录页；
  * - **失败重试**：重开当前章并回到原来的页码；
@@ -220,8 +229,11 @@ class ReadingEngine(
         loadJob = scope.launch {
             when (val result = loader.load(chapter.url)) {
                 is AppResult.Success -> {
-                    val pages = result.data
+                    val pages = result.data.withRefererFallback(chapter.url)
                     val resume = resumePage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
+                    // 新章节的页面到了，旧章节的预载和位图就没用了：
+                    // 长图很占内存，不主动放掉，新一话的图就得跟它们抢名额
+                    preloader.retainOnly(pages.map { it.url })
                     _state.update {
                         it.copy(
                             isLoading = false,
@@ -329,3 +341,17 @@ class ReadingEngine(
         const val NEXT_PREFETCH_PAGES = 2
     }
 }
+
+/**
+ * 站点没配 Referer 时，用章节页地址兜底。
+ *
+ * 不少站只要 Referer 存在就放行，值是什么无所谓。补在这里而不是放在 UI：
+ * 展示和预加载必须发同一套请求头，否则预加载下来的图对显示那条请求毫无帮助，
+ * 白花一次流量。
+ */
+private fun List<Page>.withRefererFallback(chapterUrl: String): List<Page> =
+    if (chapterUrl.isBlank() || none { it.referer.isBlank() }) {
+        this
+    } else {
+        map { if (it.referer.isBlank()) it.copy(referer = chapterUrl) else it }
+    }

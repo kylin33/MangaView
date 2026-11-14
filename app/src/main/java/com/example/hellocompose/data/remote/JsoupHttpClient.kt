@@ -1,14 +1,17 @@
 package com.example.hellocompose.data.remote
 
 import com.example.hellocompose.core.AppConfig
+import com.example.hellocompose.core.PlainHttpBlockedException
 import com.example.hellocompose.data.source.SourceConfig
 import org.jsoup.Jsoup
 import org.jsoup.HttpStatusException
 import org.jsoup.nodes.Document
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -19,9 +22,24 @@ import javax.net.ssl.X509TrustManager
  * 之所以要包一层：jsoup 1.17 起移除了 Connection.ignoreSslErrors()，
  * 只能通过 sslSocketFactory() 注入自定义工厂；UA / Referer / 超时也在这里统一，
  * 避免每个抓取方法各写一遍。换站点时这些值跟着 [SourceConfig] 走，不用改代码。
+ *
+ * ## 安全策略
+ *
+ * 默认**严格校验**：不注入任何自定义 SSL 工厂，完全交给平台（系统 CA + 主机名校验）。
+ * 只有配置里显式写了 `trustAllCerts: true` / `allowPlainHttp: true` 才会放宽，
+ * 而这两个字段只有用户在识别阶段点过「仍然继续」才会被写入。所以：
+ *
+ * 1. 证书错误**不重试**。握手失败是确定性的结论，重试只会把真实原因拖成一句"网络异常"，
+ *    也会让人误以为等一等就好了。
+ * 2. 证书错误**不自动降级**。以前这里会依次尝试 https → 放宽证书 → http，
+ *    那等于把中间人攻击的入口开在最常见的失败路径上。
+ * 3. 明文 http 请求必须有对应的配置授权，否则直接拒绝。
  */
-class JsoupHttpClient {
+class JsoupHttpClient(
+    private val diagnostics: TlsDiagnostics = TlsDiagnostics()
+) {
 
+    /** 仅在配置显式开启 trustAllCerts 时使用，见类注释 */
     private val trustAllSocketFactory: SSLSocketFactory by lazy {
         val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
@@ -39,7 +57,8 @@ class JsoupHttpClient {
         // Referer 取配置里的模板，{baseUrl} / {pageUrl} 会被展开
         referer = source.refererFor(url),
         timeoutMs = source.timeoutMs,
-        trustAllCerts = source.trustAllCerts
+        trustAllCerts = source.trustAllCerts,
+        allowPlainHttp = source.allowPlainHttp
     )
 
     /**
@@ -51,8 +70,11 @@ class JsoupHttpClient {
         userAgent: String = AppConfig.USER_AGENT,
         referer: String = "",
         timeoutMs: Long = AppConfig.TIMEOUT_MS,
-        trustAllCerts: Boolean = false
+        trustAllCerts: Boolean = false,
+        allowPlainHttp: Boolean = false
     ): Document {
+        guardPlainHttp(url, allowPlainHttp)
+
         var lastError: Exception? = null
 
         // 5xx / 超时重试一次。
@@ -61,11 +83,22 @@ class JsoupHttpClient {
         repeat(MAX_ATTEMPTS) { attempt ->
             try {
                 return request(url, userAgent, referer, timeoutMs, trustAllCerts)
+            } catch (e: SSLException) {
+                // 证书问题必须原样上抛，不能掉进下面的重试分支：
+                // 重试两次得到的是同一个结果，只会让用户多等 1.4 秒并看到更模糊的错误
+                throw diagnostics.diagnose(e, url)
+            } catch (e: SocketTimeoutException) {
+                lastError = e
             } catch (e: HttpStatusException) {
                 if (e.statusCode !in 500..599) throw e
                 lastError = e
-            } catch (e: SocketTimeoutException) {
-                lastError = e
+            } catch (e: IOException) {
+                // 有些平台的 TLS 错误会被包在 IOException 里，再剥一层
+                val tls = generateSequence<Throwable>(e.cause) { it.cause }
+                    .filterIsInstance<SSLException>()
+                    .firstOrNull()
+                if (tls != null) throw diagnostics.diagnose(tls, url)
+                throw e
             }
 
             if (attempt < MAX_ATTEMPTS - 1) {
@@ -74,6 +107,18 @@ class JsoupHttpClient {
             }
         }
         throw lastError ?: IllegalStateException("请求失败：$url")
+    }
+
+    /**
+     * 明文 HTTP 的闸门。
+     *
+     * 校验放宽是"内容可能被伪造"，明文传输是"内容一定暴露在链路上"，后者更严重，
+     * 所以不靠"记得别用 http"这种约定，直接在这里拦住。放行凭据只有一个：
+     * 配置里写明了 `allowPlainHttp: true`，而那是用户在弹窗里确认过的结果。
+     */
+    private fun guardPlainHttp(url: String, allowPlainHttp: Boolean) {
+        if (allowPlainHttp) return
+        if (url.startsWith("http://", ignoreCase = true)) throw PlainHttpBlockedException(url)
     }
 
     private fun request(
@@ -93,6 +138,7 @@ class JsoupHttpClient {
             // 少数站会按 Referer 之外的请求头判断，补一组常规值降低被拦概率
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
+        // 只有配置显式例外才注入；其余情况保持平台默认的严格校验
         if (trustAllCerts) {
             connection.sslSocketFactory(trustAllSocketFactory)
         }

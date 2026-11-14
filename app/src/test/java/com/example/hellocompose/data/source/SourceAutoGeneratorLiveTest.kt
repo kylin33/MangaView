@@ -1,6 +1,5 @@
 package com.example.hellocompose.data.source
 
-import com.example.hellocompose.core.AppResult
 import com.example.hellocompose.core.ErrorType
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.MangaScraper
@@ -41,7 +40,7 @@ class SourceAutoGeneratorLiveTest {
         val generator = SourceAutoGenerator(JsoupHttpClient())
         val result = generator.generate(url) { step -> println("[step] $step") }
 
-        if (result is AppResult.Failure) {
+        if (result is SourceAutoGenerator.Outcome.Failed) {
             val error = result.error
             println("[fail] ${error.type} / ${error.detail}")
             // 网络问题与被测逻辑无关，跳过；识别器自己的失败必须让测试红掉
@@ -52,7 +51,16 @@ class SourceAutoGeneratorLiveTest {
             throw AssertionError("识别失败：${error.type} / ${error.detail}")
         }
 
-        val data = (result as AppResult.Success).data
+        // 需要用户确认才能继续（证书异常 / 只支持明文）。测试里没有人会点「继续」，
+        // 这本身就是正确行为：识别器不会自己放宽。这里按跳过处理，但把原因打出来
+        if (result is SourceAutoGenerator.Outcome.NeedsConfirmation) {
+            println("[需要确认] ${result.request.message}")
+            println("[详情] ${result.request.detail}")
+            Assume.assumeTrue("站点要求不安全连接，跳过（需人工确认）", false)
+            return@runBlocking
+        }
+
+        val data = (result as SourceAutoGenerator.Outcome.Success).result
         println("---------- 生成的配置 ----------")
         println(data.json)
         println("---------- 识别报告 ----------")
@@ -60,8 +68,13 @@ class SourceAutoGeneratorLiveTest {
         println("章节 ${data.report.chapterCount} 个：${data.report.chapterSamples}")
         println("图片 ${data.report.imageCount} 张：${data.report.imageSamples}")
         println("搜索：${data.report.searchPath}")
-        println("放宽证书：${data.report.relaxedTls}")
+        println("安全例外：${data.report.insecure}")
         println("警告：${data.report.warnings}")
+
+        // 严格模式下生成的配置不允许带任何例外
+        assertTrue("默认策略下不应该生成带安全例外的配置", data.report.insecure == null)
+        assertTrue("生成的配置不应关闭证书校验", !data.config.trustAllCerts)
+        assertTrue("生成的配置不应允许明文 HTTP", !data.config.allowPlainHttp)
 
         // 只有「仅搜索」配置才允许首页为空，其余情况首页必须有内容
         assertTrue(
@@ -123,15 +136,20 @@ class SourceAutoGeneratorLiveTest {
         }
 
         println("[结果] $result")
-        if (result is AppResult.Failure &&
+        if (result is SourceAutoGenerator.Outcome.Failed &&
             (result.error.type == ErrorType.NETWORK || result.error.type == ErrorType.TIMEOUT)
         ) {
             Assume.assumeTrue("网络不可用，跳过：${result.error.detail}", false)
             return@runBlocking
         }
 
-        assertTrue("非漫画站不应该生成出配置", result is AppResult.Failure)
-        val error = (result as AppResult.Failure).error
+        assertTrue(
+            "非漫画站不应该生成出配置",
+            result is SourceAutoGenerator.Outcome.Failed || result is SourceAutoGenerator.Outcome.NeedsConfirmation
+        )
+        if (result is SourceAutoGenerator.Outcome.NeedsConfirmation) return@runBlocking
+
+        val error = (result as SourceAutoGenerator.Outcome.Failed).error
         println("[失败信息] ${error.type} / ${error.detail}")
         assertTrue(
             "报错要说明是「没找到列表结构」，实际是：${error.detail}",

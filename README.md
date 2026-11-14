@@ -88,10 +88,12 @@ class ReadingEngine(
 | 章节切换 | 持有正序目录，上一章/下一章内部完成，返回栈不会堆积 |
 | 失败重试 | 重开当前章并回到原页码 |
 | 下一章预取 | 离末尾 3 页时预取下一章前 2 页，翻章不白屏 |
+| 跨章释放 | 新章页面到达后调 `retainOnly(urls)`，旧章的请求和位图立即放掉 |
 | 滚动位置恢复 | 暴露 `restoreIndex`，UI 消费后调 `consumeRestore()` 复位 |
 
-换图片库只改 `CoilPagePreloader` 一个适配器；引擎本身的「恢复位置 / 预加载窗口 / 翻章」
-都能用假的 loader 在纯 JVM 里测（见 `ReadingEngineTest`）。
+换图片库只改 `data/image` 下的适配器（`CoilPagePreloader` + `ImageRequestManager`）；
+引擎本身的「恢复位置 / 预加载窗口 / 翻章」都能用假的 loader 在纯 JVM 里测
+（见 `ReadingEngineTest`）。
 
 ### Auto Generator
 
@@ -125,6 +127,84 @@ URL → 首页 HTML → 推断列表选择器 → 进详情页 → 推断章节�
 每一项都是**已经真实发生的事实**（解析出多少条、多少条标题非空、第一章是否真打开过），
 不做基于页面猜测的加分。识别页会把最弱的一项直接指出来，
 例如「最弱环节：文件名去重率 —— 去重率 42%（低说明抓到的是封面墙）」。
+
+## 图片加载与内存
+
+韩漫的图是「长图 + 高清 + 连续滚动」，一张 2000×5000 的图按原尺寸解出来是
+2000×5000×4B ≈ **38MB**，同时解十张就是 381MB —— 堆根本不够。所以图片链路
+单独拆了一层，请求和显示分开：
+
+```
+Page URL
+   │
+   ▼
+ImageRequestManager        请求去重 / 失败重试 / 章节释放 / 缓存 key
+   │
+   ▼
+Coil ImageLoader           有界 LRU 内存缓存 + 磁盘缓存 + 解码闸门
+   │
+   ▼
+PageBoundsDecoder          按原图尺寸算采样尺寸（超长图兜底）
+   │
+   ▼
+AsyncImage                 只负责显示与失败提示
+```
+
+| 措施 | 做法 |
+| --- | --- |
+| 按屏幕尺寸采样 | 请求尺寸给屏宽，原图 2000 宽只解到 1000 宽；**只缩不放** |
+| 对齐 2 的幂采样 | 解码宽度往 `原图/2ⁿ` 上靠（不低于屏宽 85%），让 `BitmapFactory` 一次采样到位：2000 宽的图从「先解 38MB 中间位图再缩」变成直接解 10MB |
+| 超长图低内存渲染 | 解码前 `peek` 出原始尺寸，按面积预算（单页 ≤ 600 万像素）继续缩；超出纹理上限（4096）的强制软件位图 |
+| 限制同时解码 | `bitmapFactoryMaxParallelism(2)` + 解码调度器并行度 2，两道闸门 |
+| 有界 LRU | 内存缓存按堆 **18%** 封顶，磁盘 256MB；key 带屏宽，换尺寸不会混用 |
+| 请求去重 | 同一地址正在飞就不再入队（引擎按页索引去重，请求层按地址去重） |
+| 失败重试 | 只有超时/断流/5xx/429 重试，最多 3 次退避；证书错误和 403 **绝不重试** |
+| 离开页面取消 | 阅读页 `onDispose` 取消预加载；`AsyncImage` 离开组合时自动取消自己的请求 |
+| 切章释放 | 新章加载完成后 `retainOnly(urls)`：取消旧章在飞的请求 + 从内存缓存摘掉旧章位图 |
+| 内存压力 | `Application.onTrimMemory` 转发给 Coil，并停掉投机性的预加载；`onLowMemory` 清空缓存 |
+| 滚动不跳 | 记住每页宽高比（`PageSizeCache`），图片到达前先把高度占好 |
+
+**没有自己写解码器**：`PageBoundsDecoder` 只做「探尺寸 → 改 `Options` → 交回 Coil 的
+`BitmapFactoryDecoder`」，采样、EXIF、色彩空间、硬件位图仍然由 Coil 处理。任何一步
+出意外（流不支持 `peek`）都退回原始 `Options`，优化不会变成新的失败点。
+
+仍有的取舍：
+
+- 解码一张 2000 宽的图时，`BitmapFactory` 必须先把中间位图解出来再缩放，
+  单张的瞬时峰值无法消除——能控制的是**同时解几张**和**缓存里留几张**；
+- 没有做真正的分块（按区域解码整卷长图）：那需要自定义 `Fetcher` + 分片缓存，
+  在「不做完整解码系统」的前提下收益不划算，先用像素预算把最坏情况挡住。
+
+## 连接安全
+
+默认严格：页面请求完全交给平台的 HTTPS 校验（系统 CA + 主机名），不注入任何自定义 SSL 工厂。
+
+识别站点时，HTTPS 走不通**不会由程序替你决定**：
+
+| 情况 | 行为 |
+| --- | --- |
+| 证书过期 / 自签名 / 域名不匹配 / 签发者不受信任 | 停下，弹窗给出证书主体、签发者、有效期和系统原因 |
+| 站点没有 HTTPS（443 上不是 TLS） | 先探测明文是否可用，可用才提示「只能以明文访问」 |
+| 站点返回 403 / 502 等状态码 | 当作「打不开」报错，**不会**因此降级到 HTTP |
+
+只有用户点了「仍然关闭证书校验」或「仍然用明文 HTTP」，才会带着对应例外重新识别一次，
+并把例外写进生成的配置：
+
+```jsonc
+"trustAllCerts": true,
+"securityWarning": "已关闭证书校验（trustAllCerts=true）：无法防范中间人，页面和图片都可能被篡改"
+```
+
+例外一旦存在，编辑页顶部会出现红色横幅。`allowPlainHttp` 的处理完全相同。
+
+三条硬规则：
+
+1. **证书错误不自动重试**。握手失败是确定性结论，重试只会把真实原因拖成"网络异常"。
+2. **证书错误不自动放宽**。没有弹窗确认，就绝不会生成 `trustAllCerts: true`。
+3. **明文 HTTP 必须有配置授权**。`JsoupHttpClient` 在发请求前拦下所有未授权的 `http://`，
+   报「已阻止不安全的明文连接」而不是「网络异常」。
+
+配置解析层同样把关：`baseUrl` 写成 `http://` 却没有 `"allowPlainHttp": true` 会直接拒绝加载。
 
 ## 构建
 
@@ -209,7 +289,8 @@ App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错�
 | `userAgent` | 否 | 覆盖默认 UA |
 | `timeoutMs` | 否 | 默认 15000，限制在 3000–60000 |
 | `referer` | 否 | 请求页面时的 Referer 模板，默认 `{baseUrl}/` |
-| `trustAllCerts` | 否 | 默认 `false`。站点证书链不完整时才开 |
+| `trustAllCerts` | 否 | 默认 `false`。关闭证书校验，**显式例外**，见「连接安全」 |
+| `allowPlainHttp` | 否 | 默认 `false`。允许明文 HTTP，`baseUrl` 是 `http://` 时必填 |
 | `home` / `search` / `detail` / `reader` | 前三个必填 | 四组抓取规则，见下 |
 
 ### 四组规则
@@ -308,7 +389,7 @@ adb shell am force-stop com.example.hellocompose
 
 | 情况 | 处理 |
 | --- | --- |
-| 证书链不完整 | 依次试 https → https(放宽证书) → http → http(放宽证书)，成功的方案写进 `trustAllCerts` |
+| 证书链不完整 / 只支持明文 | 停在「等你确认」，弹窗列证书详情；确认后才带上 `trustAllCerts` / `allowPlainHttp` |
 | 首页域名和作品链接域名不同 | 以作品链接的实际域名为准，自动切换 `baseUrl` |
 | 封面不是 `<img>`，而是 `<a data-original>` 背景图 | 把「有图」从「有 img 标签」放宽为「有图片地址载体」 |
 | 首页拆成十几个小板块 | 除「单个板块」外还尝试「全站封面图」，取覆盖更全的那个 |
@@ -339,8 +420,9 @@ com.example.hellocompose
 │   │   ├── ReadingEngine           加载/预加载/位置/翻章/重试
 │   │   └── ChapterOrder            目录顺序归一化（纯函数）
 │   └── autogen/                    ★ 自动识别引擎
-│       ├── SourceAutoGenerator     三步识别编排 + 降级重试 + 置信度汇总
+│       ├── SourceAutoGenerator     三步识别编排 + 严格连接策略 + 置信度汇总
 │       ├── SourceAutoDetector      结构识别：HTML → 候选选择器
+│       ├── InsecurePolicy          安全例外：只有用户确认后才会构造出来
 │       └── DetectionConfidence     打分模型与权重
 ├── data/
 │   ├── model/                      Manga、Chapter
@@ -351,11 +433,21 @@ com.example.hellocompose
 │   │   ├── ChapterMatch           跨站章节匹配
 │   │   ├── Dom                    结构分析底层工具
 │   │   └── RuleEvaluator          select/attr 语义的唯一实现
-│   ├── remote/                     JsoupHttpClient、MangaScraper、PageParser
+│   ├── remote/                     JsoupHttpClient（严格 TLS + 明文闸门）、MangaScraper、PageParser
+│   │   └── TlsDiagnosis            证书错误分类 + 只读探针（读证书，不取内容）
 │   ├── repository/                 MangaRepository（选站点、统一异常、首页缓存）
 │   ├── history/                    ReadingRecord、HistoryRepository（进度 + 浏览记录）
 │   ├── settings/                   SettingsRepository（DataStore）
-│   └── image/                      MangaImageRequests、CoilPagePreloader
+│   └── image/                      图片请求层
+│       ├── MangaImageLoader        全局 Coil 配置：LRU 上限、解码闸门、磁盘缓存
+│       ├── ImageRequestManager     请求去重 / 重试 / 章节释放 / 缓存 key
+│       ├── PageBoundsDecoder       探原始尺寸 → 像素预算 → 交给 Coil 解码
+│       ├── PageSampling            采样与预算的纯函数（单测覆盖）
+│       ├── RetryPolicy             哪些错误值得重试（纯函数）
+│       ├── PageSizeCache           宽高比 LRU，图片到达前占好高度
+│       ├── ImageErrorText          失败原因的人话文案（纯函数）
+│       ├── MangaImageRequests      封面等非页面图的请求工厂
+│       └── CoilPagePreloader       阅读引擎的预加载/释放适配器
 └── ui/
     ├── home/ detail/ reader/ search/ history/ source/
     ├── components/                 SourceDrawer、SourceSwitchSheet、ContinueReadingCard…

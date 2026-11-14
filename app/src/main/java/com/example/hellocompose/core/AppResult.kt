@@ -1,6 +1,7 @@
 package com.example.hellocompose.core
 
 import kotlinx.coroutines.CancellationException
+import com.example.hellocompose.data.remote.TlsException
 import org.jsoup.HttpStatusException
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -14,6 +15,7 @@ enum class ErrorType {
     NETWORK,   // 断网、DNS 解析失败、连接被拒
     TIMEOUT,   // 超时
     TLS,       // 证书 / SSL 握手失败
+    INSECURE,  // 被策略拦下的不安全连接（明文 HTTP）
     HTTP,      // 服务器返回 4xx / 5xx
     PARSE,     // 页面结构变了，选择器匹配不到
     CONFIG,    // 站点配置缺失或非法（assets/sources 下没有可用配置）
@@ -22,20 +24,34 @@ enum class ErrorType {
 
 data class AppError(
     val type: ErrorType,
-    val detail: String
+    val detail: String,
+    /** 覆盖默认的一句话说明。证书错误要带上具体原因，不能只说"校验失败" */
+    val message: String? = null,
+    /** 补充建议。和 detail 分开，是因为前者给"怎么办"，后者给"发生了什么" */
+    val hint: String? = null
 ) {
     /** 面向用户的一句话说明 */
     val userMessage: String
-        get() = when (type) {
+        get() = message ?: when (type) {
             ErrorType.NETWORK -> "网络连接失败，请检查网络后重试"
             ErrorType.TIMEOUT -> "请求超时，站点响应过慢"
             ErrorType.TLS -> "站点证书校验失败"
+            ErrorType.INSECURE -> "已阻止不安全的明文连接"
             ErrorType.HTTP -> "站点返回异常状态"
             ErrorType.PARSE -> "页面结构已变化，解析规则需要更新"
             ErrorType.CONFIG -> "没有可用的站点配置"
             ErrorType.UNKNOWN -> "发生未知错误"
         }
 }
+
+/**
+ * 明文 HTTP 请求被策略拦下。
+ *
+ * 单独成类型而不是当成 NETWORK，是因为对用户来说这两件事的处置完全不同：
+ * 网络错误等一等就好，这个要么改配置、要么换站点。
+ */
+class PlainHttpBlockedException(val url: String) :
+    IOException("已阻止不安全的明文连接：$url")
 
 /**
  * 页面能打开、但没有解析出内容 —— 几乎总是选择器失效，
@@ -61,7 +77,21 @@ fun Throwable.toAppError(): AppError = when (this) {
     is HttpStatusException -> AppError(ErrorType.HTTP, "HTTP $statusCode")
     is UnknownHostException -> AppError(ErrorType.NETWORK, message ?: "域名解析失败")
     is SocketTimeoutException -> AppError(ErrorType.TIMEOUT, message ?: "连接超时")
+    // 顺序要紧：TlsException 是 SSLException 的子类，先判它才能拿到证书详情
+    is TlsException -> AppError(
+        type = ErrorType.TLS,
+        detail = detailText,
+        message = userMessage,
+        hint = problem.advice
+    )
     is SSLException -> AppError(ErrorType.TLS, message ?: "SSL 握手失败")
+    is PlainHttpBlockedException -> AppError(
+        type = ErrorType.INSECURE,
+        detail = "$url\n这个地址不是 HTTPS，而站点配置没有允许明文访问",
+        message = "已阻止不安全的明文连接",
+        hint = "如果这个站点确实只支持 HTTP，需要在它的配置里显式写 \"allowPlainHttp\": true，" +
+            "并清楚这会让内容在链路上可被读取和篡改"
+    )
     is IOException -> AppError(ErrorType.NETWORK, message ?: "网络异常")
     else -> AppError(ErrorType.UNKNOWN, message ?: this::class.java.simpleName)
 }

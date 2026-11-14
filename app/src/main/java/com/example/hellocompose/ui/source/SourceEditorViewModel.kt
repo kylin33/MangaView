@@ -5,10 +5,13 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.hellocompose.core.AppError
 import com.example.hellocompose.core.AppResult
 import com.example.hellocompose.core.ErrorType
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.source.ConfigFetcher
+import com.example.hellocompose.engine.autogen.InsecurePolicy
+import com.example.hellocompose.engine.autogen.InsecureRequest
 import com.example.hellocompose.engine.autogen.SourceAutoGenerator
 import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.data.source.SourceConflictException
@@ -41,7 +44,12 @@ data class AutoUiState(
     val report: SourceAutoGenerator.Report? = null,
     val error: String? = null,
     /** 识别成功过：此时页面下方是识别产物，用户可以基于它改 */
-    val generated: Boolean = false
+    val generated: Boolean = false,
+    /**
+     * 证书/协议问题被拦下，等用户决定要不要以不安全方式继续。
+     * 非空时界面必须弹确认框，用户不点「继续」就绝不会发起放宽后的请求。
+     */
+    val confirm: InsecureRequest? = null
 )
 
 data class SourceEditorUiState(
@@ -162,6 +170,33 @@ class SourceEditorViewModel(
         }
         if (_uiState.value.auto.running) return
 
+        // 默认严格：证书不通过就停下来问，不自己放宽
+        launchDetect(url, InsecurePolicy.STRICT)
+    }
+
+    /** 用户看过证书错误后仍然选择继续。带上刚确认的策略重跑，别的路径都走不进来 */
+    fun confirmInsecure() {
+        val request = _uiState.value.auto.confirm ?: return
+        if (_uiState.value.auto.running) return
+        launchDetect(
+            url = _uiState.value.auto.url.trim(),
+            policy = request.policy,
+            note = "已按你的确认继续（不安全连接）"
+        )
+    }
+
+    fun cancelInsecure() {
+        _uiState.update {
+            it.copy(
+                auto = it.auto.copy(
+                    confirm = null,
+                    error = "已取消：没有建立不安全连接，这个站点暂时添加不了"
+                )
+            )
+        }
+    }
+
+    private fun launchDetect(url: String, policy: InsecurePolicy, note: String? = null) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -170,41 +205,48 @@ class SourceEditorViewModel(
                     probe = null,
                     auto = it.auto.copy(
                         running = true,
-                        steps = emptyList(),
+                        steps = listOfNotNull(note),
                         report = null,
-                        error = null
+                        error = null,
+                        confirm = null
                     )
                 )
             }
 
-            val result = generator.generate(url) { step ->
+            val outcome = generator.generate(url, policy) { step ->
                 // 识别在 IO 线程跑，StateFlow 的 update 是线程安全的，这里直接追加步骤
                 _uiState.update { it.copy(auto = it.auto.copy(steps = it.auto.steps + step)) }
             }
 
             _uiState.update { state ->
-                when (result) {
-                    is AppResult.Success -> state.copy(
-                        busy = false,
-                        text = result.data.json,
-                        parsed = result.data.config,
-                        error = null,
-                        notice = null,
-                        auto = state.auto.copy(
-                            running = false,
-                            generated = true,
-                            report = result.data.report,
-                            // 识别时可能从 https 退回 http，回填真实地址免得用户以为自己填错了
-                            url = result.data.report.baseUrl
+                when (outcome) {
+                    is SourceAutoGenerator.Outcome.Success -> {
+                        val result = outcome.result
+                        state.copy(
+                            busy = false,
+                            text = result.json,
+                            parsed = result.config,
+                            error = null,
+                            notice = null,
+                            auto = state.auto.copy(
+                                running = false,
+                                generated = true,
+                                report = result.report,
+                                // 识别时可能换成 http（用户确认过），回填真实地址免得用户以为填错了
+                                url = result.report.baseUrl
+                            )
                         )
+                    }
+
+                    // 不做任何决定，只把证据交出来等用户选
+                    is SourceAutoGenerator.Outcome.NeedsConfirmation -> state.copy(
+                        busy = false,
+                        auto = state.auto.copy(running = false, confirm = outcome.request)
                     )
 
-                    is AppResult.Failure -> state.copy(
+                    is SourceAutoGenerator.Outcome.Failed -> state.copy(
                         busy = false,
-                        auto = state.auto.copy(
-                            running = false,
-                            error = describe(result.error.type, result.error.detail)
-                        )
+                        auto = state.auto.copy(running = false, error = describe(outcome.error))
                     )
                 }
             }
@@ -212,11 +254,12 @@ class SourceEditorViewModel(
     }
 
     /** 识别阶段的报错要能指路，不能把「解析规则需要更新」这种运行期文案套上来 */
-    private fun describe(type: ErrorType, detail: String): String = when (type) {
-        ErrorType.NETWORK -> "连不上这个站点：$detail"
+    private fun describe(error: AppError): String = when (error.type) {
+        ErrorType.NETWORK -> "连不上这个站点：${error.detail}"
         ErrorType.TIMEOUT -> "站点响应超时，稍后重试"
-        ErrorType.TLS -> "证书校验失败：$detail"
-        else -> detail
+        // 证书错误要把「签给了谁、什么时候过期」一起说清楚，否则用户无法判断该不该继续
+        ErrorType.TLS -> "${error.userMessage}\n${error.detail}"
+        else -> error.detail
     }
 
 

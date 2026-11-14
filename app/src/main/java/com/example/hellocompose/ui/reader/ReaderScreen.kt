@@ -6,13 +6,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -38,9 +36,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,7 +49,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,13 +56,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import coil.compose.SubcomposeAsyncImage
-import com.example.hellocompose.data.image.MangaImageRequests
+import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.network.HttpException
+import com.example.hellocompose.data.image.ImageErrorText
+import com.example.hellocompose.data.image.ImageRequestManager
 import com.example.hellocompose.data.model.Chapter
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.source.SourceConfig
+import com.example.hellocompose.engine.source.Page
 import com.example.hellocompose.ui.LocalAppContainer
-import com.example.hellocompose.ui.LocalImageLoader
 import com.example.hellocompose.ui.components.ErrorView
 import com.example.hellocompose.ui.components.LoadingView
 import com.example.hellocompose.ui.components.PreloadSettingsDialog
@@ -85,8 +88,8 @@ fun ReaderScreen(
     onSwitchSource: (SourceConfig, Manga, Chapter?) -> Unit
 ) {
     val container = LocalAppContainer.current
-    val context = LocalContext.current
-    val imageLoader = LocalImageLoader.current
+    /** 图片请求层：请求构造、预加载、缓存释放都走它，UI 只负责显示 */
+    val images = container.imageRequests
 
     val viewModel: ReaderViewModel = viewModel(
         // 按「详情页 + 起始章节」建 VM：不同的书各自维护自己的目录和进度
@@ -102,8 +105,7 @@ fun ReaderScreen(
                     sources = container.sourceRepository,
                     settings = container.settingsRepository,
                     history = container.historyRepository,
-                    context = context.applicationContext,
-                    imageLoader = container.imageLoader
+                    images = container.imageRequests
                 )
             }
         }
@@ -115,6 +117,12 @@ fun ReaderScreen(
     var showSwitch by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    // 退出阅读页时把还在飞的预加载取消掉。已经解好的位图留在缓存里，
+    // 所以下次进来还是快的，取消的只是「已经没人要的下半章」
+    DisposableEffect(Unit) {
+        onDispose { images.cancelPreloads() }
+    }
 
     // 加载完成后定位：上次看到的位置优先，没有记录再回顶部
     LaunchedEffect(state.chapterUrl, state.isLoading) {
@@ -244,37 +252,11 @@ fun ReaderScreen(
                         items = state.pages,
                         key = { index, page -> "$index-${page.url}" }
                     ) { index, page ->
-                        SubcomposeAsyncImage(
-                            model = MangaImageRequests.build(
-                                context = context,
-                                imageUrl = page.url,
-                                // 每页自带 Referer，引擎已经把站点配置的模板展开好了
-                                referer = page.referer.ifBlank { state.chapterUrl }
-                            ),
-                            imageLoader = imageLoader,
-                            contentDescription = "第 ${index + 1} 页",
-                            contentScale = ContentScale.FillWidth,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .wrapContentHeight(),
-                            loading = {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(280.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        CircularProgressIndicator(strokeWidth = 2.dp)
-                                        Spacer(Modifier.height(8.dp))
-                                        Text(
-                                            text = "${index + 1} / ${state.pages.size}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
+                        PageImage(
+                            page = page,
+                            index = index,
+                            total = state.pages.size,
+                            images = images
                         )
                     }
 
@@ -312,6 +294,129 @@ fun ReaderScreen(
                     onSwitchSource(selection.source, selection.manga, selection.chapter)
                 }
             )
+        }
+    }
+}
+
+/** 还不知道页面比例时先占的高度，避免图片到达后把滚动位置顶跑 */
+private val PagePlaceholderHeight = 280.dp
+
+/**
+ * 一页漫画。
+ *
+ * 用 `AsyncImage` 而不是 `SubcomposeAsyncImage`：后者每次加载都要开一次子组合，
+ * 长列表滚动时开销明显；加载指示器用一个覆盖层就够了。
+ *
+ * 高度先按记下来的宽高比占好（见 PageSizeCache），图片到达只是往框里填内容，
+ * 不再引发布局跳动——长图连续滚动的场景里，这比加载动画重要得多。
+ *
+ * 解码尺寸、Referer、缓存 key 全在 [ImageRequestManager.pageRequest] 里，
+ * 这里只管显示和失败重试。
+ */
+@Composable
+private fun PageImage(
+    page: Page,
+    index: Int,
+    total: Int,
+    images: ImageRequestManager
+) {
+    var attempt by remember(page.url) { mutableIntStateOf(0) }
+    var aspect by remember(page.url) { mutableFloatStateOf(images.sizes.aspectOf(page.url) ?: 0f) }
+    var error by remember(page.url) { mutableStateOf<String?>(null) }
+
+    // 重试时换一个请求实例，AsyncImage 才会真的重新发起加载
+    val request = remember(page.url, attempt) { images.pageRequest(page) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (aspect > 0f) {
+                    Modifier.aspectRatio(aspect)
+                } else {
+                    Modifier.height(PagePlaceholderHeight)
+                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = request,
+            imageLoader = images.imageLoader,
+            contentDescription = "第 ${index + 1} 页",
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier.fillMaxSize(),
+            onState = { state ->
+                when (state) {
+                    is AsyncImagePainter.State.Success -> {
+                        error = null
+                        val drawable = state.result.drawable
+                        if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
+                            images.sizes.put(
+                                page.url,
+                                drawable.intrinsicWidth,
+                                drawable.intrinsicHeight
+                            )
+                            aspect = drawable.intrinsicWidth.toFloat() / drawable.intrinsicHeight
+                        }
+                    }
+
+                    is AsyncImagePainter.State.Error -> {
+                        val throwable = state.result.throwable
+                        error = ImageErrorText.of(
+                            throwable,
+                            (throwable as? HttpException)?.response?.code
+                        )
+                    }
+
+                    else -> Unit
+                }
+            }
+        )
+
+        when {
+            error != null -> PageError(
+                message = error.orEmpty(),
+                onRetry = {
+                    error = null
+                    attempt += 1
+                }
+            )
+
+            // 还不知道这张图多大，先给个进度，别让整页空白
+            aspect <= 0f -> PageLoading(index + 1, total)
+        }
+    }
+}
+
+@Composable
+private fun PageLoading(current: Int, total: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        CircularProgressIndicator(strokeWidth = 2.dp)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "$current / $total",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun PageError(message: String, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        TextButton(onClick = onRetry) {
+            Text("重试")
         }
     }
 }
