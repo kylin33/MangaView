@@ -1,0 +1,35 @@
+{
+  "name": "混合网格站（同容器内 12 张作品卡 + 8 条无标题横幅，靠结构一致性区分）",
+  "baseUrl": "https://grid.example",
+  "input": "https://grid.example/",
+  "routes": [
+    {
+      "match": "prefix:/search?keyword=",
+      "page": "search.html"
+    },
+    {
+      "match": "prefix:/comic/",
+      "page": "detail.html"
+    },
+    {
+      "match": "prefix:/read/",
+      "page": "reader.html"
+    },
+    {
+      "match": "exact:/",
+      "page": "home.html"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://grid.example",
+    "homeMin": 12,
+    "homeTitleMaxUntitled": 0,
+    "chapterMin": 40,
+    "chapterTitleLike": 0.9,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "searchPath": "/search?keyword={keyword}",
+    "searchOnly": false
+  }
+}

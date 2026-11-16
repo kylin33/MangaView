@@ -22,9 +22,13 @@ import java.net.URL
 /**
  * 站点结构识别：给定一份 HTML，推出可用的抓取规则。
  *
- * 核心循环是「候选生成 → 用真实解析器打分」：
- * 1. 按 DOM 里重复出现的子元素结构生成候选选择器（列表、条目天然长这样）；
- * 2. 每个候选都用 [PageParser] 真的解析一遍，按解析出的条数和字段填满率打分。
+ * 列表型识别分成两步，两步各有独立文件：
+ * 1. [ListCandidates] **生成候选** —— 页面上所有可能成列表的节点集合，不做取舍；
+ * 2. 这里给每个候选算出字段规则，用 [PageParser] **真的解析一遍**，再把事实交给
+ *    [ListScorer] 按「数量 / 图片 / 标题 / 地址 / 结构一致性」打分。
+ *
+ * 之所以不「找到第一个满足条件的 DOM 就返回」：首页往往同时有热门、最新、推荐、广告
+ * 好几组结构相似（图片 + 链接 + 文本）的板块，先出现的那个纯属排版顺序，跟内容质量无关。
  *
  * 为什么必须用 PageParser 打分而不是靠标签名猜：等到运行时才发现选择器写错，
  * 用户完全无法判断错在哪。这里打分的就是运行时那条代码路径，所以「识别通过」
@@ -57,172 +61,121 @@ object SourceAutoDetector {
     // ==================== 首页列表 ====================
 
     fun detectHome(doc: Document, baseUrl: String, minSize: Int = 4): List<HomeGuess> {
-        val seen = HashSet<String>()
-        val prelim = ArrayList<Dom.Block>()
-
-        for (block in Dom.blocks(doc, minSize = minSize)) {
-            if (!seen.add(block.itemSelector)) continue
-            val matched = doc.select(block.itemSelector)
-            if (matched.size < minSize) continue
-            // 首页是封面网格，条目里没有图的基本是导航/文字列表，先筛掉。
-            // 判断"有图"不能只认 <img>：大量站点（苹果CMS 系模板尤其常见）把封面写成
-            // <a data-original="..."></a>，靠 CSS background-image 显示，页面里根本没有 img 标签。
-            val imgRatio = matched.count { imageCarrierIn(it) != null }.toDouble() / matched.size
-            if (imgRatio < 0.5) continue
-            prelim += block
-        }
-
-        val blockGuesses = prelim
-            .sortedByDescending { doc.select(it.itemSelector).size }
-            .take(12)
-            .mapNotNull { block ->
-                val matched = doc.select(block.itemSelector)
-                val cover = pickCoverRule(matched) ?: return@mapNotNull null
-                val link = pickLinkRule(matched, baseUrl) ?: return@mapNotNull null
-                val title = pickTitleRule(matched)
-
-                val rule = ListRule(
-                    path = "/",
-                    item = block.itemSelector,
-                    link = link,
-                    cover = cover,
-                    title = title
-                )
-                val parsed = PageParser.list(doc, rule, baseUrl)
-                if (parsed.size < minSize) return@mapNotNull null
-
-                HomeGuess(rule, scoreHome(parsed, matched.size, block.container), parsed)
-            }
-
-        return (blockGuesses + detectCoverLists(doc, baseUrl, minSize))
+        val signature = StructureSignature()
+        return ListCandidates.home(doc, minSize, signature)
+            .mapNotNull { candidate -> evaluateHome(doc, candidate, baseUrl, minSize, signature) }
             .sortedByDescending { it.score }
             .distinctBy { it.rule.item }
             .take(8)
     }
 
     /**
-     * 另一种首页形态：整页没有统一的列表容器，而是十几个小板块各自成列表。
-     * 这时「选中某一个板块」只能拿到一小部分，反倒是「所有封面图」最接近用户想看的首页。
-     * 手写配置里那句 `img[data-original]` 就是这个思路。
+     * 给一个候选列表算规则并打分。
+     *
+     * 打分用的是「按规则真的解析一遍」的结果，而不是靠标签名猜 —— 等到运行时才发现
+     * 选择器写错，用户完全无法判断错在哪。这里打分的就是运行时那条代码路径，
+     * 所以「识别通过」和「实际能抓」是同一件事。
      */
-    private fun detectCoverLists(doc: Document, baseUrl: String, minSize: Int): List<HomeGuess> {
-        val images = contentImages(doc)
-        if (images.size < minSize) return emptyList()
+    private fun evaluateHome(
+        doc: Document,
+        candidate: ListCandidate,
+        baseUrl: String,
+        minSize: Int,
+        signature: StructureSignature
+    ): HomeGuess? {
+        val members = candidate.members
+        if (members.size < minSize) return null
 
-        val selectors = LinkedHashSet<String>()
-        selectors += "img[data-original]"
-        selectors += "img[data-src]"
-        // 背景图卡片形态：封面地址挂在 <a>/<div> 上而不是 <img> 上
-        selectors += "a[data-original]"
-        selectors += "[data-original]"
+        val cover = pickCoverRule(members) ?: return null
+        val link = pickLinkRule(members, baseUrl) ?: return null
+        val title = pickTitleRule(members)
 
-        images.flatMap { it.classNames() }
-            .filter { Dom.isSafeClass(it) }
-            .groupingBy { it }
-            .eachCount()
-            .entries
-            .sortedByDescending { it.value }
-            .take(3)
-            .filter { it.value >= 4 }
-            .forEach { selectors += "img.${it.key}" }
+        val rule = ListRule(
+            path = "/",
+            item = candidate.itemSelector,
+            link = link,
+            cover = cover,
+            title = title
+        )
+        val parsed = PageParser.list(doc, rule, baseUrl)
+        if (parsed.size < minSize) return null
 
-        val out = ArrayList<HomeGuess>()
-        for (selector in selectors) {
-            val matched = doc.select(selector)
-            if (matched.size < 4) continue
-
-            val rule = ListRule(
-                path = "/",
-                item = selector,
-                // 封面图外面通常裹着指向详情页的 <a>
-                link = FieldRule(select = "^", attr = "href"),
-                cover = FieldRule(select = "", attr = imageAttrOrder(matched)),
-                title = pickTitleRule(matched)
-            )
-            val parsed = PageParser.list(doc, rule, baseUrl)
-            if (parsed.size < minSize) continue
-
-            val container = matched.firstOrNull()?.parent() ?: doc.body()
-            out += HomeGuess(rule, scoreHome(parsed, matched.size, container), parsed)
-        }
-        return out
-    }
-
-    private fun scoreHome(parsed: List<Manga>, matchedCount: Int, container: Element): Double {
-        val n = parsed.size
-        val named = parsed.count { it.title != PageParser.UNTITLED }
-        var s = n.coerceAtMost(60) * 0.9
-        s += named.toDouble() / n * 14.0
-        // 命中数远大于解析结果，说明选择器太宽，把半页链接都框进来了
-        if (matchedCount > n * 3 + 12) s -= 12.0
-        if (Dom.isBoilerplate(container)) s -= 8.0
-        return s
+        val facts = ListFacts(
+            matchedCount = members.size,
+            itemCount = parsed.size,
+            imageValid = members.count { member ->
+                ImageSignals.looksLikeImage(member.pickByRule(cover).readByRule(cover.attr))
+            },
+            titleValid = members.count { member -> isUsableTitle(member, title) },
+            urlValid = members.count { member -> isUsableUrl(member, link, baseUrl) },
+            distinctTitles = parsed.map { it.title }.distinct().size,
+            distinctUrls = parsed.map { it.detailUrl }.distinct().size,
+            iconCovers = members.count { member ->
+                ImageSignals.isIcon(member.pickByRule(cover).readByRule(cover.attr))
+            },
+            structureConsistency = signature.consistency(members),
+            boilerplate = Dom.isBoilerplate(candidate.container),
+            originBonus = candidate.origin.bonus
+        )
+        return HomeGuess(rule, ListScorer.score(facts, ScoreWeights.HOME).total, parsed)
     }
 
     // ==================== 章节列表 ====================
 
     fun detectChapters(doc: Document, baseUrl: String): List<ChapterGuess> {
-        val seen = HashSet<String>()
-        val prelim = ArrayList<Triple<Dom.Block, Int, Double>>()
+        val signature = StructureSignature()
+        val candidates = ListCandidates.chapters(doc, signature)
+        if (candidates.isEmpty()) return emptyList()
 
-        for (block in Dom.blocks(doc, minSize = 2)) {
-            if (!seen.add(block.itemSelector)) continue
-            val matched = doc.select(block.itemSelector)
-            if (matched.isEmpty()) continue
-
-            val withHref = matched.count {
-                (it.tagName() == "a" && it.hasAttr("href")) || it.selectFirst("a[href]") != null
-            }.toDouble() / matched.size
-            if (withHref < 0.8) continue
-
-            val likeRatio = matched.count { isChapterLike(it.text().trim()) }.toDouble() / matched.size
-            prelim += Triple(block, matched.size, likeRatio)
-        }
-
-        return prelim
-            .sortedWith(
-                compareByDescending<Triple<Dom.Block, Int, Double>> { it.third }
-                    .thenByDescending { it.second }
-            )
-            .take(12)
-            .mapNotNull { (block, _, _) ->
-                val matched = doc.select(block.itemSelector)
-                val url = pickChapterUrlRule(matched, baseUrl) ?: return@mapNotNull null
-                val title = pickChapterTitleRule(matched)
-
-                val rule = DetailRule(item = block.itemSelector, url = url, title = title)
-                val parsed = PageParser.chapters(doc, rule, baseUrl)
-                if (parsed.isEmpty()) return@mapNotNull null
-                // 作者/题材/地区这些链接也长成「一堆同类 a 标签」，不筛掉就会被当成章节
-                if (!isChapterLinkSet(parsed)) return@mapNotNull null
-
-                val ratio = parsed.count { isChapterLike(it.title) }.toDouble() / parsed.size
-                val score = scoreChapters(parsed, matched.size, block.container, ratio)
-                ChapterGuess(rule, score, parsed, ratio)
-            }
+        return ListCandidates.mergeSplit(doc, candidates)
+            .mapNotNull { candidate -> evaluateChapters(doc, candidate, baseUrl, signature) }
             .sortedByDescending { it.score }
+            .distinctBy { it.rule.item }
             .take(8)
     }
 
-    private fun scoreChapters(
-        parsed: List<Chapter>,
-        matchedCount: Int,
-        container: Element,
-        ratio: Double
-    ): Double {
-        val n = parsed.size
-        var s = n.coerceAtMost(200) * 0.4
-        s += ratio * 18.0
-        s += parsed.map { it.url }.distinct().size.toDouble() / n * 4.0
-        if (matchedCount > n * 2 + 8) s -= 8.0
-        if (Dom.isBoilerplate(container)) s -= 10.0
-        return s
+    private fun evaluateChapters(
+        doc: Document,
+        candidate: ListCandidate,
+        baseUrl: String,
+        signature: StructureSignature
+    ): ChapterGuess? {
+        val members = candidate.members
+        if (members.isEmpty()) return null
+
+        val url = pickChapterUrlRule(members, baseUrl) ?: return null
+        val title = pickChapterTitleRule(members)
+
+        val rule = DetailRule(item = candidate.itemSelector, url = url, title = title)
+        val parsed = PageParser.chapters(doc, rule, baseUrl)
+        if (parsed.isEmpty()) return null
+        // 作者/题材/地区这些链接也长成「一堆同类 a 标签」，不筛掉就会被当成章节
+        if (!isChapterLinkSet(parsed)) return null
+
+        val ratio = parsed.count { isChapterLike(it.title) }.toDouble() / parsed.size
+        val facts = ListFacts(
+            matchedCount = members.size,
+            itemCount = parsed.size,
+            // 章节列表没有封面，这一项在 CHAPTERS 权重里是 0
+            imageValid = 0,
+            titleValid = members.count { member ->
+                member.pickByRule(title).readByRule(title.attr).length in 1..120
+            },
+            urlValid = members.count { member -> isUsableUrl(member, url, baseUrl) },
+            distinctTitles = parsed.map { it.title }.distinct().size,
+            distinctUrls = parsed.map { it.url }.distinct().size,
+            structureConsistency = signature.consistency(members),
+            boilerplate = Dom.isBoilerplate(candidate.container),
+            chapterLike = ratio,
+            originBonus = candidate.origin.bonus
+        )
+        return ChapterGuess(rule, ListScorer.score(facts, ScoreWeights.CHAPTERS).total, parsed, ratio)
     }
 
     // ==================== 章节图片 ====================
 
     fun detectReaders(doc: Document, baseUrl: String): List<ReaderGuess> {
-        val images = contentImages(doc)
+        val images = ImageSignals.contentImages(doc)
         if (images.isEmpty()) return emptyList()
 
         // 只按「父元素的标签 + class」分组。
@@ -241,7 +194,7 @@ object SourceAutoDetector {
             val parentSelector = Dom.classSelector(parent)
                 ?: Dom.containerSelector(parent)
                 ?: continue
-            val attrOrder = imageAttrOrder(members)
+            val attrOrder = ImageSignals.attrOrder(members)
 
             for (itemSelector in listOf("$parentSelector > img", "$parentSelector img")) {
                 if (!seen.add(itemSelector)) continue
@@ -303,17 +256,43 @@ object SourceAutoDetector {
 
     // ==================== 字段规则挑选 ====================
 
-    private fun pickLinkRule(items: List<Element>, baseUrl: String): FieldRule? {
-        val candidates = ArrayList<FieldRule>()
+    private fun pickLinkRule(items: List<Element>, baseUrl: String): FieldRule? =
+        pickUrlRule(
+            items = items,
+            baseUrl = baseUrl,
+            // 条目本身就是封面图时，详情链接只能往上找最近的 <a>
+            allowClosest = items.count { it.tagName() == "img" } >= items.size * 0.8
+        )
+
+    /**
+     * 挑「条目地址」的取值规则。列表和章节共用。
+     *
+     * 关键在于不能只认 `href`：有一类站点把跳转整个交给 JS，写的是
+     * `href="javascript:void(0)"`，真实地址放在 `data-href` / `data-url` 上。
+     * 只认 href 的话，整组链接都会被判成「取不到地址」，详情页直接识别不出章节 ——
+     * 用户看到的是一句「这个站抓不到」，而实际上只是少试了一个属性。
+     */
+    private fun pickUrlRule(
+        items: List<Element>,
+        baseUrl: String,
+        allowClosest: Boolean
+    ): FieldRule? {
+        if (items.isEmpty()) return null
+
+        val candidates = LinkedHashSet<FieldRule>()
         if (items.count { it.tagName() == "a" && it.hasAttr("href") } >= items.size * 0.8) {
             candidates += FieldRule(select = "", attr = "href")
         }
         candidates += FieldRule(select = "a", attr = "href")
-        if (items.count { it.tagName() == "img" } >= items.size * 0.8) {
-            // 条目本身就是封面图，靠 closest("a") 往上找链接
-            candidates += FieldRule(select = "^", attr = "href")
-        }
+        if (allowClosest) candidates += FieldRule(select = "^", attr = "href")
         candidates += FieldRule(select = "a[href]", attr = "href")
+
+        // JS 跳转的三种常见摆法：条目自身带 data-*、条目内部第一个 a 带、最近的 a 祖先带
+        for (attr in JUMP_ATTRS) {
+            candidates += FieldRule(select = "", attr = attr)
+            candidates += FieldRule(select = "a", attr = attr)
+            candidates += FieldRule(select = "^", attr = attr)
+        }
 
         var best: FieldRule? = null
         var bestQuality = 0.0
@@ -327,17 +306,35 @@ object SourceAutoDetector {
         return best?.takeIf { bestQuality >= 0.6 }
     }
 
+    /** 把跳转交给 JS 的站点，真实地址通常挂在这几个属性上 */
+    private val JUMP_ATTRS = listOf("data-href", "data-url", "data-link")
+
+    /** data-* 里也可能放封面图，不能当详情链接用 */
+    private val IMAGE_EXT = Regex(
+        """\.(jpe?g|png|gif|webp|avif|bmp|svg)(\?|#|$)""",
+        RegexOption.IGNORE_CASE
+    )
+
     private fun linkQuality(items: List<Element>, rule: FieldRule, baseUrl: String): Double {
         if (items.isEmpty()) return 0.0
-        var ok = 0
-        for (el in items) {
-            val raw = el.pickByRule(rule).readByRule(rule.attr)
-            if (raw.isBlank()) continue
-            // 只要求是绝对地址。不能强制同域：不少站点首页在 .top、详情页在 .cc（镜像/分站），
-            // 一旦要求同域，整站会被判成「没有列表结构」。
-            if (UrlResolver.resolve(raw, baseUrl).startsWith("http")) ok++
-        }
-        return ok.toDouble() / items.size
+        return items.count { isUsableUrl(it, rule, baseUrl) }.toDouble() / items.size
+    }
+
+    /**
+     * 这个条目按给定规则能不能取到「点得过去」的地址。
+     *
+     * 打分和挑规则共用同一份判断：挑规则时它回答「哪个属性最好」，
+     * 打分时它回答「这组条目有几成能点」。两边语义不一致的话，
+     * 会出现「挑中的规则命中率 100%、候选得分却很低」这种自相矛盾的结果。
+     */
+    private fun isUsableUrl(item: Element, rule: FieldRule, baseUrl: String): Boolean {
+        val raw = item.pickByRule(rule).readByRule(rule.attr)
+        if (raw.isBlank()) return false
+        // data-* 属性里时常顺手放一张封面图，它也是合法地址，但指不到详情页
+        if (rule.attr != "href" && IMAGE_EXT.containsMatchIn(raw)) return false
+        // 只要求是绝对地址。不能强制同域：不少站点首页在 .top、详情页在 .cc（镜像/分站），
+        // 一旦要求同域，整站会被判成「没有列表结构」。
+        return UrlResolver.resolve(raw, baseUrl).startsWith("http")
     }
 
     /**
@@ -351,28 +348,35 @@ object SourceAutoDetector {
     private fun pickCoverRule(items: List<Element>): FieldRule? {
         val selfMode = items.count { it.tagName() == "img" } >= items.size * 0.8
         if (selfMode) {
-            val rule = FieldRule(select = "", attr = imageAttrOrder(items))
+            val rule = FieldRule(select = "", attr = ImageSignals.attrOrder(items))
             return rule.takeIf { coverQuality(items, rule) >= 0.5 }
         }
 
         val images = items.mapNotNull { it.selectFirst("img") }
-        val carriers = items.mapNotNull { imageCarrierIn(it) }
+        val carriers = items.mapNotNull { ImageSignals.carrierIn(it) }
 
         val candidates = LinkedHashSet<FieldRule>()
         if (images.size >= items.size * 0.5) {
-            candidates += FieldRule(select = "img", attr = imageAttrOrder(images))
+            candidates += FieldRule(select = "img", attr = ImageSignals.attrOrder(images))
         }
         if (carriers.size >= items.size * 0.5) {
-            val attrOrder = imageAttrOrder(carriers)
-            // 优先用「标签 + class」这种稳定选择器（如 a.vodlist_thumb），
+            val attrOrder = ImageSignals.attrOrder(carriers)
+            // 条目自身就是图片载体（`<a data-original>` 直接当卡片，苹果CMS 系常见）。
+            // 这种情况只能取条目自己的属性：用任何后代选择器都选不到「自己」，
+            // 早先这里一律按「载体在条目内部」处理，生成的规则一个都匹配不上。
+            if (carriers.count { carrier -> items.any { it === carrier } } >= items.size * 0.5) {
+                candidates += FieldRule(select = "", attr = attrOrder)
+            }
+            // 载体在条目内部时，优先用「标签 + class」这种稳定选择器（如 a.vodlist_thumb），
             // 它比属性选择器更能避开同一条目里的其它链接
-            carriers.groupingBy { Dom.signature(it) }
+            carriers.filter { carrier -> items.none { it === carrier } }
+                .groupingBy { Dom.signature(it) }
                 .eachCount()
                 .filterKeys { it.contains('.') }
                 .maxByOrNull { it.value }
                 ?.key
                 ?.let { candidates += FieldRule(select = it, attr = attrOrder) }
-            candidates += FieldRule(select = CARRIER_SELECTOR, attr = attrOrder)
+            candidates += FieldRule(select = ImageSignals.CARRIER_SELECTOR, attr = attrOrder)
         }
         if (candidates.isEmpty()) return null
 
@@ -386,7 +390,7 @@ object SourceAutoDetector {
         var ok = 0
         for (el in items) {
             val raw = el.pickByRule(rule).readByRule(rule.attr)
-            if (looksLikeImage(raw)) ok++
+            if (ImageSignals.looksLikeImage(raw)) ok++
         }
         return ok.toDouble() / items.size
     }
@@ -422,36 +426,19 @@ object SourceAutoDetector {
 
     private fun titleQuality(items: List<Element>, rule: FieldRule): Double {
         if (items.isEmpty()) return 0.0
-        var good = 0
-        for (el in items) {
-            val text = el.pickByRule(rule).readByRule(rule.attr)
-            if (text.length in 2..90 && text.count { it.isLetterOrDigit() } >= 2) {
-                // 「书名 作者:XXX」这种整块文本不是书名，拿去做搜索词也搜不到
-                if (!TITLE_NOISE.containsMatchIn(text)) good++
-            }
-        }
-        return good.toDouble() / items.size
+        return items.count { isUsableTitle(it, rule) }.toDouble() / items.size
     }
 
-    private fun pickChapterUrlRule(items: List<Element>, baseUrl: String): FieldRule? {
-        val candidates = ArrayList<FieldRule>()
-        if (items.count { it.tagName() == "a" && it.hasAttr("href") } >= items.size * 0.8) {
-            candidates += FieldRule(select = "", attr = "href")
-        }
-        candidates += FieldRule(select = "a", attr = "href")
-        candidates += FieldRule(select = "^", attr = "href")
-
-        var best: FieldRule? = null
-        var bestQuality = 0.0
-        for (candidate in candidates) {
-            val q = linkQuality(items, candidate, baseUrl)
-            if (q > bestQuality) {
-                bestQuality = q
-                best = candidate
-            }
-        }
-        return best?.takeIf { bestQuality >= 0.6 }
+    /** 取到的这段文本能不能当书名用：长度合理、有实义字符、不是「作者：xxx」这种整块信息 */
+    private fun isUsableTitle(item: Element, rule: FieldRule): Boolean {
+        val text = item.pickByRule(rule).readByRule(rule.attr)
+        if (text.length !in 2..90) return false
+        if (text.count { it.isLetterOrDigit() } < 2) return false
+        return !TITLE_NOISE.containsMatchIn(text)
     }
+
+    private fun pickChapterUrlRule(items: List<Element>, baseUrl: String): FieldRule? =
+        pickUrlRule(items = items, baseUrl = baseUrl, allowClosest = true)
 
     private fun pickChapterTitleRule(items: List<Element>): FieldRule {
         val candidates = listOf(
@@ -482,83 +469,6 @@ object SourceAutoDetector {
             }
         }
         return best
-    }
-
-    // ==================== 图片属性 ====================
-
-    private val IMAGE_ATTRS = listOf(
-        "data-original", "data-src", "data-lazy-src", "data-echo", "data-actualsrc", "data-bg", "src"
-    )
-
-    /**
-     * 能承载图片地址的元素。不限于 img：背景图卡片把地址写在 a/div 的 data-* 上。
-     * 顺序保持文档顺序，`selectFirst` 会取页面上最先出现的那一个。
-     */
-    private const val CARRIER_SELECTOR =
-        "img, [data-original], [data-src], [data-lazy-src], [data-echo], [data-actualsrc], [data-bg]"
-
-    /** 元素自身携带的、看起来像图片地址的值 */
-    private fun imageValues(el: Element): List<String> =
-        IMAGE_ATTRS.map { el.attr(it) }.filter { looksLikeImage(it) }
-
-    internal fun carriesImage(el: Element): Boolean = imageValues(el).isNotEmpty()
-
-    /** 条目自身或它内部第一个能取到图片地址的元素 */
-    private fun imageCarrierIn(item: Element): Element? =
-        if (carriesImage(item)) item else item.selectFirst(CARRIER_SELECTOR)
-            ?.takeIf { carriesImage(it) }
-
-    /**
-     * 拼属性候选链，顺序按懒加载的常见优先级。
-     * `src` 永远兜底放在最后：懒加载站点的 src 常常是一张占位 gif。
-     */
-    private fun imageAttrOrder(images: List<Element>): String {
-        val threshold = maxOf(1, (images.size * 0.5).toInt())
-        val present = IMAGE_ATTRS.filter { attr ->
-            images.count { looksLikeImage(it.attr(attr)) } >= threshold
-        }
-        val order = present.ifEmpty { listOf("src") }
-        return if ("src" in order) order.joinToString("|") else (order + "src").joinToString("|")
-    }
-
-    private val PLACEHOLDER_HINTS = listOf(
-        "data:image", "blank.", "spacer.", "placeholder", "loading.", "pixel.", "transparent.", "grey.gif"
-    )
-
-    private val ICON_HINTS = Regex(
-        "(logo|icon|avatar|qrcode|qr-code|advert|banner|emoticon|smilies|weixin|sprite|btn_|button|arrow|pixel)",
-        RegexOption.IGNORE_CASE
-    )
-
-    internal fun looksLikeImage(value: String): Boolean {
-        if (value.isBlank()) return false
-        val s = value.trim().lowercase()
-        if (s.startsWith("data:")) return false
-        if (s.length < 6) return false
-        if (PLACEHOLDER_HINTS.any { s.contains(it) }) return false
-        return s.startsWith("http") || s.startsWith("//") || s.contains('/')
-    }
-
-    private fun contentImages(doc: Document): List<Element> {
-        val chosen = ArrayList<Element>()
-        val chosenSet = HashSet<Element>()
-        for (el in doc.select(CARRIER_SELECTOR)) {
-            // 外层元素已经算过图片时，跳过它内部重复命中的元素（背景图卡片的常见嵌套）
-            if (el.parents().any { it in chosenSet }) continue
-
-            val values = imageValues(el)
-            if (values.isEmpty()) continue
-            // 全都是 icon/logo/广告之类的就别当正文图
-            if (values.none { !ICON_HINTS.containsMatchIn(it) }) continue
-
-            val w = el.attr("width").toIntOrNull() ?: 0
-            val h = el.attr("height").toIntOrNull() ?: 0
-            if (w in 1..60 && h in 1..60) continue
-
-            chosen += el
-            chosenSet += el
-        }
-        return chosen
     }
 
     // ==================== 章节标题判定 ====================

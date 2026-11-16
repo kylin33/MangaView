@@ -1,0 +1,35 @@
+{
+  "name": "多板块站（广告位在前 + 热门 8 部 + 最新 30 部，必须选对板块）",
+  "baseUrl": "https://noise.example",
+  "input": "https://noise.example/",
+  "routes": [
+    {
+      "match": "prefix:/search?keyword=",
+      "page": "search.html"
+    },
+    {
+      "match": "prefix:/comic/",
+      "page": "detail.html"
+    },
+    {
+      "match": "prefix:/read/",
+      "page": "reader.html"
+    },
+    {
+      "match": "exact:/",
+      "page": "home.html"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://noise.example",
+    "homeMin": 30,
+    "homeTitleMaxUntitled": 0,
+    "chapterMin": 40,
+    "chapterTitleLike": 0.9,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "searchPath": "/search?keyword={keyword}",
+    "searchOnly": false
+  }
+}

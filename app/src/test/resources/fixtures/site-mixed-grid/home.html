@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>混合网格站 - 在线漫画</title>
+</head>
+<body>
+<header class="header"><nav class="nav"><a href="/">首页</a><a href="/rank">排行榜</a></nav></header>
+
+<main>
+    <!--
+      同一个容器里混了两种结构：12 张完整作品卡（封面 + 标题 + 链接），
+      8 条只有图没有标题的横幅。过宽的选择器 div.grid > div 会把 20 个都框进来，
+      条数看着更多，但其中 8 条根本没有书名。
+    -->
+    <div class="grid">
+        <div class="card">
+            <a href="/comic/1"><img data-src="/uploads/cover/1.jpg" alt="夜色霓虹"></a>
+            <h3><a href="/comic/1">夜色霓虹</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/2"><img data-src="/uploads/cover/2.jpg" alt="第二人生"></a>
+            <h3><a href="/comic/2">第二人生</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/3"><img data-src="/uploads/cover/3.jpg" alt="荆棘之城"></a>
+            <h3><a href="/comic/3">荆棘之城</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/4"><img data-src="/uploads/cover/4.jpg" alt="午夜书店"></a>
+            <h3><a href="/comic/4">午夜书店</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/5"><img data-src="/uploads/cover/5.jpg" alt="南方来信"></a>
+            <h3><a href="/comic/5">南方来信</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/6"><img data-src="/uploads/cover/6.jpg" alt="海边的房间"></a>
+            <h3><a href="/comic/6">海边的房间</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/7"><img data-src="/uploads/cover/7.jpg" alt="旧日回声"></a>
+            <h3><a href="/comic/7">旧日回声</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/8"><img data-src="/uploads/cover/8.jpg" alt="镜中人"></a>
+            <h3><a href="/comic/8">镜中人</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/9"><img data-src="/uploads/cover/9.jpg" alt="雨夜列车"></a>
+            <h3><a href="/comic/9">雨夜列车</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/10"><img data-src="/uploads/cover/10.jpg" alt="无声告白"></a>
+            <h3><a href="/comic/10">无声告白</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/11"><img data-src="/uploads/cover/11.jpg" alt="灰塔"></a>
+            <h3><a href="/comic/11">灰塔</a></h3>
+        </div>
+        <div class="card">
+            <a href="/comic/12"><img data-src="/uploads/cover/12.jpg" alt="长夜将尽"></a>
+            <h3><a href="/comic/12">长夜将尽</a></h3>
+        </div>
+        <div class="banner"><a href="/comic/701"><img data-src="/promo/1.jpg"></a></div>
+        <div class="banner"><a href="/comic/702"><img data-src="/promo/2.jpg"></a></div>
+        <div class="banner"><a href="/comic/703"><img data-src="/promo/3.jpg"></a></div>
+        <div class="banner"><a href="/comic/704"><img data-src="/promo/4.jpg"></a></div>
+        <div class="banner"><a href="/comic/705"><img data-src="/promo/5.jpg"></a></div>
+        <div class="banner"><a href="/comic/706"><img data-src="/promo/6.jpg"></a></div>
+        <div class="banner"><a href="/comic/707"><img data-src="/promo/7.jpg"></a></div>
+        <div class="banner"><a href="/comic/708"><img data-src="/promo/8.jpg"></a></div>
+    </div>
+</main>
+
+<footer class="footer"><p>本页数据为测试夹具，与任何真实站点无关。</p></footer>
+</body>
+</html>
