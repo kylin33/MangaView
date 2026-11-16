@@ -1,0 +1,13 @@
+{
+  "name": "反爬站（Cloudflare 人机验证，所有路径 403）",
+  "type": "antibot",
+  "baseUrl": "https://guard-h.example",
+  "input": "https://guard-h.example/",
+  "expected": "blocked",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/comic/", "page": "detail_001.html" },
+    { "match": "prefix:/read/", "page": "reader.html" }
+  ],
+  "notes": "四个 HTML 都是同一张 Cloudflare 验证页（真实站点对任何路径都返回它），只为人工复核时能直接打开看。夹具本身在请求层就返回 403，不会真的读这些文件：这类站点的正确行为是「如实拒绝并说明是人机验证」，不是硬猜一份配置。"
+}

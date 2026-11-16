@@ -110,11 +110,22 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
 
         val homeGuesses = SourceAutoDetector.detectHome(homeDoc, resolvedBase)
 
+        // DOM 里一个列表结构都没有时，先看看内联脚本里有没有现成的数据。
+        // SPA 站（以及一部分"首页整屏由前端渲染"的站点）把整页内容塞进
+        // `var listData = [{…}]` 这类变量，DOM 只有一个空容器，但数据和浏览器里
+        // 看到的完全一样。这条通道原本只在搜索结果页用过，导致这类站被误判成
+        // 「只能搜索」——首页明明有内容，用户却只能自己去搜。
+        val scriptHome = if (homeGuesses.isEmpty()) {
+            scriptHomeGuess(homeDoc, path, resolvedBase, onStep)
+        } else {
+            null
+        }
+
         // ---- 首页没有可用的漫画列表 ----
         // 不直接判死：有些站首页（或它的"排行榜"页）整屏由脚本渲染，列表在 HTML 里根本不存在，
         // 但站内搜索是好用的。这种情况下让用户通过搜索看，比只报一句"找不到列表"有用得多。
         // 前提是目录和图片必须真的能抓 —— 否则就是给用户一个空壳配置。
-        if (homeGuesses.isEmpty()) {
+        if (homeGuesses.isEmpty() && scriptHome == null) {
             onStep("首页没找到列表，试试搜索")
             val entry = detectSearchEntry(homeDoc, resolvedBase, activePolicy, onStep)
                 ?: throw EmptyPageException(
@@ -150,14 +161,17 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             return finish(config, resolvedBase, 0, emptyList(), chapterGuess, readerGuess, activePolicy, warnings)
         }
 
-        val homeGuess = homeGuesses.first()
+        val homeGuess = scriptHome ?: homeGuesses.first()
         // 镜像站的常见情况：首页在 .top，作品链接全指向 .cc。
         // 以作品链接的实际域名为准，否则详情页里的相对地址会被解析到错误域名。
         val effectiveBase = alignBase(resolvedBase, homeGuess, onStep)
-        val finalHome = if (effectiveBase != resolvedBase) {
-            SourceAutoDetector.detectHome(homeDoc, effectiveBase).firstOrNull() ?: homeGuess
-        } else {
-            homeGuess
+        val finalHome = when {
+            // 脚本数据里的地址是相对路径，换域名后必须按新的 baseUrl 重新解析一遍，
+            // 否则 items 里留着旧域名，后面每个请求都会落到错误的主机上
+            scriptHome != null && effectiveBase != resolvedBase -> relistScriptHome(homeDoc, scriptHome, effectiveBase, path)
+            effectiveBase != resolvedBase ->
+                SourceAutoDetector.detectHome(homeDoc, effectiveBase).firstOrNull() ?: homeGuess
+            else -> homeGuess
         }
         onStep("首页识别到 ${finalHome.items.size} 部作品")
 
@@ -173,6 +187,9 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         val chapterGuess = detectChapterStage(detailUrls, effectiveBase, activePolicy, onStep)
         val readerGuess = detectReaderStage(chapterGuess.items.first().url, effectiveBase, activePolicy, onStep)
 
+        if (scriptHome != null) {
+            warnings += SCRIPT_HOME_HINT
+        }
         if (finalHome.items.size < 8) {
             warnings += "首页只识别到 ${finalHome.items.size} 部作品，列表可能不完整"
         }
@@ -482,6 +499,57 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
     }
 
     private data class SearchEntry(val rule: ListRule, val items: List<Manga>)
+
+    /**
+     * 首页 DOM 里没有列表时，把整页当成一个「脚本列表」来读。
+     *
+     * 和搜索结果页用的是同一条通道（[SourceAutoDetector.detectScriptLists]），
+     * 区别只在门槛：首页是一整屏内容，条数太少说明抓到的多半是导航数据而不是作品列表，
+     * 所以要求至少 4 条 —— 与 [SourceAutoDetector.detectHome] 的最小条数保持一致，
+     * 免得「DOM 抓 4 条算成功、脚本抓 3 条算失败」这种不对称。
+     *
+     * 多个候选时取「解析出条目最多」的那个：脚本里常常同时躺着轮播图、推荐位和作品列表，
+     * 条目最多的那个几乎总是真正的列表。
+     */
+    private fun scriptHomeGuess(
+        doc: Document,
+        path: String,
+        baseUrl: String,
+        onStep: (String) -> Unit
+    ): SourceAutoDetector.HomeGuess? {
+        onStep("首页没有列表结构，检查内联脚本数据")
+        val rules = SourceAutoDetector.detectScriptLists(doc, baseUrl, minSize = SCRIPT_HOME_MIN)
+        if (rules.isEmpty()) return null
+
+        val best = rules.maxByOrNull { rule ->
+            PageParser.list(doc, ListRule(path = path, item = "", script = rule), baseUrl).size
+        } ?: return null
+
+        val guess = relistScriptHome(
+            doc,
+            SourceAutoDetector.HomeGuess(
+                rule = ListRule(path = path, item = "", script = best),
+                score = 0.0,
+                items = emptyList()
+            ),
+            baseUrl,
+            path
+        )
+        if (guess.items.size < SCRIPT_HOME_MIN) return null
+        onStep("首页列表在脚本数据里，${guess.items.size} 部作品")
+        return guess
+    }
+
+    /** 用（可能已经变了的）baseUrl 重算脚本列表的条目 */
+    private fun relistScriptHome(
+        doc: Document,
+        guess: SourceAutoDetector.HomeGuess,
+        baseUrl: String,
+        path: String
+    ): SourceAutoDetector.HomeGuess {
+        val rule = guess.rule.copy(path = path)
+        return guess.copy(rule = rule, items = PageParser.list(doc, rule, baseUrl))
+    }
 
     /**
      * 判断某个搜索地址到底有没有用上关键字。
@@ -934,6 +1002,13 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         /** 没有排行榜时给用户的提示语 */
         const val NO_HOME_LIST_HINT =
             "暂时找不到排行榜，请自行通过搜索观看漫画（目录和图片已确认可用）"
+
+        /** 首页列表来自内联脚本时的提示：站点改版后这条通道最容易悄悄失效 */
+        const val SCRIPT_HOME_HINT =
+            "首页列表来自页面内联脚本数据。站点前端改版后可能需要重新识别"
+
+        /** 脚本通道的最小条数，与 DOM 通道保持一致 */
+        const val SCRIPT_HOME_MIN = 4
 
         /**
          * 识别失败时的兜底规则。宁可给一份「结构完整但抓不到东西」的配置让用户改，

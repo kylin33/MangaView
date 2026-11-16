@@ -1,0 +1,31 @@
+{
+  "name": "SPA 站（首页与目录整页由脚本数据渲染，DOM 只有空壳）",
+  "type": "spa",
+  "baseUrl": "https://spa-e.example",
+  "input": "https://spa-e.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/comic/5001", "page": "detail_001.html" },
+    { "match": "prefix:/comic/5002", "page": "detail_002.html" },
+    { "match": "prefix:/read/", "page": "reader.html" }
+  ],
+  "home": {
+    "json": "homeData",
+    "expectedCount": 18
+  },
+  "detail": {
+    "titleJson": "bookInfo",
+    "chapterJson": "chapterData",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 24 },
+      { "page": "detail_002.html", "expectedChapterCount": 12 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.reader > img",
+    "imageAttr": "src",
+    "expectedImageCount": 12
+  },
+  "notes": "首页与目录页都只有一个 div#app 空壳，数据在 var homeData / var chapterData 里；阅读页反而是服务端直出的。这类站以前会被判成「只能搜索」，标准答案只能写内联变量名——页面上唯一的真相就是那段 JSON。"
+}

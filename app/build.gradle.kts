@@ -41,6 +41,10 @@ android {
             // -DliveSite=... 默认只设到 Gradle 守护进程，fork 出来的测试 JVM 读不到，
             // 必须显式透传；否则实连测试永远走「跳过」，看起来是通过了
             it.systemProperty("liveSite", System.getProperty("liveSite") ?: "")
+            // 语料基线的更新开关，同理必须透传（-Dautogen.corpus.update=true 才会重写 baseline.json）
+            it.systemProperty("autogen.corpus.update", System.getProperty("autogen.corpus.update") ?: "")
+            it.systemProperty("autogen.corpus.reportDir", System.getProperty("autogen.corpus.reportDir") ?: "")
+            it.systemProperty("autogen.corpus.baseline", System.getProperty("autogen.corpus.baseline") ?: "")
             it.testLogging {
                 showStandardStreams = true
                 events("passed", "failed", "skipped")

@@ -1,0 +1,33 @@
+{
+  "name": "WordPress 漫画站（Madara 主题 + 懒加载插件）",
+  "type": "wordpress",
+  "baseUrl": "https://wp-manga-f.example",
+  "input": "https://wp-manga-f.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/manga/6001/chapter", "page": "reader.html" },
+    { "match": "prefix:/manga/6001", "page": "detail_001.html" },
+    { "match": "prefix:/manga/6002", "page": "detail_002.html" }
+  ],
+  "home": {
+    "selector": "div.c-tabs-item__content",
+    "expectedCount": 20,
+    "titleFrom": "text",
+    "coverAttr": "src"
+  },
+  "detail": {
+    "titleSelector": "h1.post-title",
+    "chapterSelector": "li.wp-manga-chapter a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 55 },
+      { "page": "detail_002.html", "expectedChapterCount": 30 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.reading-content > img",
+    "imageAttr": "data-src",
+    "expectedImageCount": 20
+  },
+  "notes": "Madara 主题的标准结构：列表项带 4 层包裹（row/c-tabs-item__content/tab-thumb/post-title），目录是 li.wp-manga-chapter，正文图被懒加载插件换成 blank.gif + data-src。这类模板在中文漫画站里占比很高，选择器认对了就一次通吃。"
+}

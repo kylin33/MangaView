@@ -1,0 +1,33 @@
+{
+  "name": "多域名站（首页在 portal，作品在 mirror，图片在 CDN）",
+  "type": "multidomain",
+  "baseUrl": "https://portal-i.example",
+  "input": "https://portal-i.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/comic/8001", "page": "detail_001.html" },
+    { "match": "prefix:/comic/8002", "page": "detail_002.html" },
+    { "match": "prefix:/read/", "page": "reader.html" }
+  ],
+  "home": {
+    "selector": "div.rank-list > div.book",
+    "expectedCount": 12,
+    "titleFrom": "text",
+    "coverAttr": "src"
+  },
+  "detail": {
+    "titleSelector": "h1.comic-name",
+    "chapterSelector": "ul.chapter a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 18 },
+      { "page": "detail_002.html", "expectedChapterCount": 12 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.content > img",
+    "imageAttr": "src",
+    "expectedImageCount": 16
+  },
+  "notes": "三个域名：入口 portal、作品 mirror、图片 img.cdn（协议相对 //）。识别必须把 baseUrl 对齐到作品链接真正所在的 mirror，否则目录里的 /read/8001/1 会被拼到 portal 上，整站看起来「能识别但打不开」。"
+}

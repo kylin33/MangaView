@@ -1,0 +1,33 @@
+{
+  "name": "普通漫画站（标准 DOM，带顶部推广位与侧栏排行）",
+  "type": "standard",
+  "baseUrl": "https://manga-a.example",
+  "input": "https://manga-a.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/detail/1001", "page": "detail_001.html" },
+    { "match": "prefix:/detail/1002", "page": "detail_002.html" },
+    { "match": "prefix:/read/", "page": "reader.html" }
+  ],
+  "home": {
+    "selector": "div.comic-list > div.comic-item",
+    "expectedCount": 20,
+    "titleFrom": "text",
+    "coverAttr": "data-src"
+  },
+  "detail": {
+    "titleSelector": "h1.comic-title",
+    "chapterSelector": "ul.chapter-list > li > a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 48 },
+      { "page": "detail_002.html", "expectedChapterCount": 36 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.reader-content > img",
+    "imageAttr": "src",
+    "expectedImageCount": 14
+  },
+  "notes": "最常见的一类站：列表容器 + 重复条目，标题在 h3>a 里，封面是 data-src 懒加载。干扰项是顶部 4 个推广位和侧栏 8 条排行——两者结构同样规整，只能靠条数和语义分开。"
+}

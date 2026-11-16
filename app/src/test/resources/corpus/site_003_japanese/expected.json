@@ -1,0 +1,33 @@
+{
+  "name": "日漫站（章节按卷分组，一个目录三个容器）",
+  "type": "japanese",
+  "baseUrl": "https://manga-jp-c.example",
+  "input": "https://manga-jp-c.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/comic/3001", "page": "detail_001.html" },
+    { "match": "prefix:/comic/3002", "page": "detail_002.html" },
+    { "match": "prefix:/ch/", "page": "reader.html" }
+  ],
+  "home": {
+    "selector": "ul.comic-grid > li",
+    "expectedCount": 24,
+    "titleFrom": "text",
+    "coverAttr": "src"
+  },
+  "detail": {
+    "titleSelector": "h1.book-title",
+    "chapterSelector": "div.chapter-groups li a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 36 },
+      { "page": "detail_002.html", "expectedChapterCount": 20 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.pages > img",
+    "imageAttr": "src",
+    "expectedImageCount": 18
+  },
+  "notes": "日漫的目录常按卷/话分组：三个 section.volume 各自一个 ul，选择器只能命中其中一卷。识别必须把同构的分块合并成一条规则，否则用户只看到 12 话。首页还有 10 条排行榜，和作品卡结构一致。"
+}

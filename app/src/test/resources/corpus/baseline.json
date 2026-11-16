@@ -1,0 +1,41 @@
+{
+  "scored": 8,
+  "stages": {
+    "CONFIG": {
+      "hits": 8,
+      "total": 8,
+      "passed": 8,
+      "denominator": 8
+    },
+    "COVER": {
+      "hits": 142,
+      "total": 8,
+      "passed": 8,
+      "denominator": 142
+    },
+    "IMAGES": {
+      "hits": 128,
+      "total": 8,
+      "passed": 8,
+      "denominator": 128
+    },
+    "TITLE": {
+      "hits": 142,
+      "total": 8,
+      "passed": 8,
+      "denominator": 142
+    },
+    "HOME": {
+      "hits": 142,
+      "total": 8,
+      "passed": 8,
+      "denominator": 142
+    },
+    "CHAPTERS": {
+      "hits": 449,
+      "total": 8,
+      "passed": 8,
+      "denominator": 449
+    }
+  }
+}

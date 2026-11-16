@@ -408,6 +408,47 @@ adb shell am force-stop com.example.hellocompose
 （`div.grid > div` 同时框进作品卡和横幅）条数很好看，但一致性只有 0.5，
 会被结构惩罚压下去。
 
+**语义特征**（`Semantics`）用来补上「class 名读不懂」这一大片站点。真实站点里
+`item-123`、`list_456`、`box-a1` 这种命名非常常见，但语义并没有消失，它散在别的地方：
+
+| 来源 | 例子 | 用来判断 |
+| --- | --- | --- |
+| class / id | `book-title`、`chapter-list`、`封面`、`bookTitle`（会按驼峰拆词） | 字段角色 |
+| 属性 | `alt="封面"`、`title`、`itemprop=name`、`aria-label` | 字段角色 |
+| URL 路径 | `/comic/123`、`/read/101/5`、`/promo/8`、`/author/11` | 详情页 / 章节 / 推广位 |
+| 链接文字 | `第 12 话`、`第 3 卷` | 章节 |
+
+用法上刻意保守：**正向只做小幅偏向，负向才是硬否定**。容器叫 `book-list` 加 0.02，
+成员地址全指向 `/promo/` 扣 0.10，容器叫 `promo-banner` 扣 0.15。原因是语义判断本身也会错
+（广告位的 class 完全可以叫 `book-item`），而「名字里写着 promo」几乎没有反例。
+字段选择里同样只做同分偏向：`span.title` 和 `h3` 都取得到干净文本时优先前者，
+质量差距大于 6% 时语义不再影响结果。
+
+### 图片地址：`src` 只是候选之一
+
+同一张封面可能出现在七个地方，而 `src` 常常是占位图。所以地址解析独立成
+`ImageUrlResolver`，先给每个候选打分再取最高：
+
+| 来源 | 初始优先级 |
+| --- | --- |
+| `data-original` | 100 |
+| `data-src` | 95 |
+| `data-lazy-src` / `data-lazyload` | 90 / 89 |
+| `data-echo` / `data-actualsrc` | 88 / 87 |
+| `srcset` / `data-srcset` | 85 / 84 |
+| `data-url` / `data-bg` / `data-image` | 83 / 82 / 81 |
+| `src` | 80 |
+| `style` 里的 `background-image:url(...)` | 75 |
+
+打分还会修正：落在 `/upload/`、`/content/`、`/pic/` 这类目录加 10，文件名带连续数字加 6，
+是 `logo` / `avatar` / `banner` / `.svg` 扣 30，占位图（`data:`、`blank.gif`、`spacer`、
+`lazyload`、1×1）直接判 0 分。`srcset` 取最大的一档而不是第一个 —— 真实站点常把
+「小图预览 + 原图」两档写在一起。
+
+运行时还有一层兜底：配置里的取值链取到占位图时，回头在这个元素上重新挑一次最可信的地址。
+懒加载站点里同一条目偶尔换写法（有的给 `data-src`、有的给 `srcset`），没有这一层就会出现
+「大部分封面正常、个别是空白」，而这种问题在配置里完全看不出来。
+
 关键点是打分用的就是正式抓取那条代码路径，所以「识别通过」和「实际能抓」是同一件事，
 不会出现「识别时看着对、保存后空白」。
 
@@ -424,6 +465,11 @@ adb shell am force-stop com.example.hellocompose
 | 章节跳转交给 JS（`href="javascript:void(0)"`） | 除 `href` 外还试 `data-href` / `data-url` / `data-link`，并排除 data-* 里的封面图 |
 | 章节被拆成多个 tab（连载 / 番外、按卷分块） | 把结构相同且都像章节的块用分组选择器合并，避免目录只抓到一半 |
 | 搜索地址不固定 | 依次试 query 与路径式共 11 种常见形态，命中即停 |
+| class / id 完全不可读（`item-123`、`box-a1`） | 靠 `alt`、链接文字与 URL 路径判断字段；广告位靠 `/promo/` 这类路径扣分 |
+| `src` 是 1×1 占位图 / base64 | 按属性优先级与地址形态打分，取 `data-original`、`data-src`、`srcset` 里最可信的那个 |
+| 只有 `srcset`、没有 `src` | 取密度/宽度最大的一档；`<picture><source>` 也算候选 |
+| 封面写在 `style` 的 `background-image` 里 | 从内联样式里抽 `url(...)`；整页背景图分页时把载体自身当作正文图候选 |
+| 图片地址是协议相对（`//cdn...`） | 跟随站点自身协议补全，不写死 https |
 | 搜索关键字被忽略、悄悄返回首页热门 | 三态判定：换个词结果不变 → 判定该地址无效，不写进配置 |
 | 页面底部有几十张推荐位封面 | 用「图片文件名去重率」识别，正文图文件名互不相同 |
 | 首页抓不到列表 | 降级为「仅搜索」配置，但目录和图片必须验证可用 |
@@ -449,6 +495,8 @@ adb shell am force-stop com.example.hellocompose
 | `site-split-chapters` | 章节拆成两个 tab，各 12 章，必须合起来才是完整目录 |
 | `site-noise-blocks` | 广告位排在最前（5 条无标题）+ 热门 8 部 + 最新 30 部，必须选对板块 |
 | `site-mixed-grid` | 同一容器里 12 张作品卡 + 8 条无标题横幅，靠结构一致性区分 |
+| `site-opaque-classes` | class 全是 `g-1` / `i-9` / `q-1`，26 条推广位排在 20 部作品前面，只能靠 URL 语义 |
+| `site-image-variants` | 同列表混排 `srcset` / 背景图 / 协议相对 / 1×1 与 base64 占位，正文整页是背景图 |
 | `site-search-only` | 首页排行榜由脚本渲染，只能靠搜索进入 |
 | `site-scripted-reader` | 正文由接口下发 —— 应该干净失败并说明原因 |
 | `site-invalid` | 非漫画站（纯文字列表）—— 不该生成配置 |
@@ -482,6 +530,78 @@ app/src/test/resources/fixtures/site-xxx/
 
 十几秒跑完，改完识别算法先看它有没有红。
 
+### 准确率语料库
+
+夹具回答的是「机制对不对」（懒加载有没有取到真地址、拆成两块的目录有没有合并），
+一个样本只盯一件事，断言写死在代码里。但「识别得有多准」是另一个问题：首页选错了板块，
+章节和图片必然跟着错，成功率会同时掉三格，看起来像「这个站很烂」，实际只有一处要改。
+
+所以 `app/src/test/resources/corpus/` 下另有一组**带标准答案**的样本，九个类型各一个：
+
+| 样本 | 覆盖的特殊情况 |
+| --- | --- |
+| `site_001_standard` | 标准 DOM；顶部 4 个推广位 + 侧栏 8 条排行做干扰 |
+| `site_002_korean` | 韩漫：封面与正文全是 `blank.gif` + `data-original`，正文 28 张 800×2400 长图 |
+| `site_003_japanese` | 日漫：目录按卷分成三个容器，必须合并才拿到 36 话 |
+| `site_004_legacy` | 2003 年模板：表格排版、大写标签、`<font>`、无 class |
+| `site_005_spa` | SPA：首页与目录只有一个空壳，数据在 `var homeData` / `var chapterData` 里 |
+| `site_006_wordpress` | Madara 主题：4 层包裹的列表项 + `li.wp-manga-chapter` + 懒加载正文图 |
+| `site_007_gallery` | 图片站：条目没有文字（书名只在 `alt`）、正文图没有 class、容器只是 `<center>` |
+| `site_008_antibot` | Cloudflare 人机验证，所有路径 403 —— 应如实拒绝，不是硬猜配置 |
+| `site_009_multidomain` | 入口 portal / 作品 mirror / 图片 CDN 三个域名，图片还是协议相对地址 |
+
+每个样本保存 `expected.json` + `home.html` + `detail_001.html` + `detail_002.html` + `reader.html`。
+两个详情页是故意的：识别只会点进第一部，第二部用来抓「规则过拟合到某一页」。
+`expected.json` 写的是**人工确认过的正确答案**：
+
+```json
+{
+  "baseUrl": "https://manga-a.example",
+  "routes": [{ "match": "prefix:/read/", "page": "reader.html" }],
+  "home":  { "selector": "div.comic-list > div.comic-item",
+             "expectedCount": 20, "titleFrom": "text", "coverAttr": "data-src" },
+  "detail": { "titleSelector": "h1.comic-title",
+              "chapterSelector": "ul.chapter-list > li > a",
+              "pages": [{ "page": "detail_001.html", "expectedChapterCount": 48 }] },
+  "reader": { "imageSelector": "div.reader-content > img",
+              "imageAttr": "src", "expectedImageCount": 14 }
+}
+```
+
+答案写选择器而不是抄 20 个书名：选择器是人工确认的那一件事，展开交给 jsoup，
+改站点时不用重抄一遍数据。SPA 例外 —— 页面上根本没有 DOM 列表，只能写内联变量名
+（`"home": { "json": "homeData" }`），由测试侧一个「找到变量名 → 括号配平 → JSON」
+的笨办法展开，故意不猜字段、不猜地址模板，避免和被测实现犯同一个错。
+
+判定按**效果**而不是选择器字符串：`.list .item` 和 `div.list > div.item` 选中的是同一批
+节点，抓到的东西一样就算对。六个阶段各自判定，并给出条目级准确率：
+
+| 阶段 | 通过条件 |
+| --- | --- |
+| 首页列表 | 作品 URL 集合 Jaccard ≥ 0.90，且 `baseUrl` 落在作品链接真实域名上 |
+| 标题提取 | 逐条完全一致的比例 ≥ 0.95 |
+| 封面提取 | 逐条完全一致的比例 ≥ 0.95 |
+| 章节提取 | 两个详情页的章节 URL 集合 Jaccard 都 ≥ 0.90 |
+| 图片地址 | 数量与**顺序**完全一致（顺序错了读起来就是乱的） |
+| 完整配置 | 以上五项全过 |
+
+```bash
+# 跑语料，控制台会打出逐站矩阵；详细报告在 app/build/reports/autogen-corpus/
+./gradlew :app:testDebugUnitTest --tests "*AutoGeneratorCorpusTest*"
+```
+
+回归策略是**棘轮**：`corpus/baseline.json` 记着每个阶段的通过站数与条目级准确率，
+任何一项掉下来就红 —— 已知短板可以不修（有记录、不阻塞提交），但谁把它改差了立刻被拦下。
+
+```bash
+# 确认是预期变化（改了样本或修好了某个短板）后更新基线
+./gradlew :app:testDebugUnitTest --tests "*AutoGeneratorCorpusTest*" -Dautogen.corpus.update=true
+```
+
+新增样本只需建目录并写 `expected.json`，`CorpusIntegrityTest` 会先把标准答案本身校验一遍
+（条数对不对、`detail_00x` 有没有贴错书、路由指向的文件在不在），
+避免「答案写错了却以为是算法退化」。
+
 ## 目录结构
 
 ```
@@ -503,7 +623,8 @@ com.example.hellocompose
 │       ├── ListCandidates          候选生成：枚举可能的列表节点集合（不评分）
 │       ├── ListScoring             候选评分：N/I/T/U/D 五项加权 + 惩罚项
 │       ├── StructureSignature      DOM 结构签名与一致性（编辑距离，阈值 0.8）
-│       ├── ImageSignals            图片地址载体判定（img / data-* / 背景图共用一套语义）
+│       ├── Semantics               语义特征：class/id/alt/URL 路径 → 标题/封面/章节/广告等角色
+│       ├── ImageSignals            图片地址载体判定（委托 ImageUrlResolver，识别与运行时同一套语义）
 │       ├── SourceAutoDetector      结构识别：HTML → 候选选择器 → 字段规则
 │       ├── InsecurePolicy          安全例外：只有用户确认后才会构造出来
 │       └── DetectionConfidence     打分模型与权重
@@ -514,6 +635,7 @@ com.example.hellocompose
 │   │   ├── SourceConfidence       随配置保存的置信度
 │   │   ├── ScriptData             内联脚本 JSON 定位与配平
 │   │   ├── ChapterMatch           跨站章节匹配
+│   │   ├── ImageUrlResolver       图片地址解析：src/data-*/srcset/背景图、占位图、优先级打分
 │   │   ├── Dom                    结构分析底层工具
 │   │   └── RuleEvaluator          select/attr 语义的唯一实现
 │   ├── remote/                     JsoupHttpClient（严格 TLS + 明文闸门）、MangaScraper、PageParser

@@ -1,0 +1,33 @@
+{
+  "name": "韩漫站（竖排长图 + 全站懒加载）",
+  "type": "korean",
+  "baseUrl": "https://hanman-b.example",
+  "input": "https://hanman-b.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/manga/2001", "page": "detail_001.html" },
+    { "match": "prefix:/manga/2002", "page": "detail_002.html" },
+    { "match": "prefix:/read/2001", "page": "reader.html" }
+  ],
+  "home": {
+    "selector": "div.book-grid > div.book-card",
+    "expectedCount": 16,
+    "titleFrom": "text",
+    "coverAttr": "data-original"
+  },
+  "detail": {
+    "titleSelector": "h1.detail-title",
+    "chapterSelector": "ul.episode-list a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 60 },
+      { "page": "detail_002.html", "expectedChapterCount": 24 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "div.viewer > img",
+    "imageAttr": "data-original",
+    "expectedImageCount": 28
+  },
+  "notes": "韩漫的两个特征都在这：封面/正文图全是 blank.gif 占位 + data-original 真地址（拿到占位图就等于整页空白），正文是 28 张 800x2400 的竖条长图。目录页顶部还有一条「最新话」快捷入口，和完整目录指向同一批地址，用来验证去重。"
+}

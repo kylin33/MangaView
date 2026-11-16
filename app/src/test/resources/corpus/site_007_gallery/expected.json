@@ -1,0 +1,34 @@
+{
+  "name": "图片站（条目没有文字、正文图没有 class、书名只在 alt 上）",
+  "type": "gallery",
+  "baseUrl": "https://pic-g.example",
+  "input": "https://pic-g.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/album/7001/", "page": "reader.html" },
+    { "match": "prefix:/album/7002/", "page": "reader.html" },
+    { "match": "prefix:/album/7001", "page": "detail_001.html" },
+    { "match": "prefix:/album/7002", "page": "detail_002.html" }
+  ],
+  "home": {
+    "selector": "div.album-list > div.album",
+    "expectedCount": 14,
+    "titleFrom": "alt",
+    "coverAttr": "src"
+  },
+  "detail": {
+    "titleSelector": "h1.album-name",
+    "chapterSelector": "ul.chap-list a",
+    "pages": [
+      { "page": "detail_001.html", "expectedChapterCount": 12 },
+      { "page": "detail_002.html", "expectedChapterCount": 8 }
+    ]
+  },
+  "reader": {
+    "page": "reader.html",
+    "imageSelector": "center img",
+    "imageAttr": "src",
+    "expectedImageCount": 10
+  },
+  "notes": "两个地方没有任何可用线索：条目里一个字都没有（书名只在 img alt 上），正文图连 class 都没有、容器只是 center。识别只能靠结构 + alt。侧栏还有一个没有 alt 的推荐块，它的标题会退化成占位文案——这正是要防的。"
+}
