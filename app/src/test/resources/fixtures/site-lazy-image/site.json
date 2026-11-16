@@ -1,0 +1,21 @@
+{
+  "name": "懒加载站（占位 gif + data-original，末尾两页直接给 src）",
+  "baseUrl": "https://lazy.example",
+  "input": "https://lazy.example/",
+  "routes": [
+    { "match": "prefix:/manga/2001/", "page": "reader.html" },
+    { "match": "prefix:/manga/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "homeMin": 8,
+    "homeTitleMaxUntitled": 0,
+    "chapterMin": 20,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "imageLast": "/upload/2001/1/10.jpg",
+    "searchPath": null,
+    "searchOnly": false
+  }
+}

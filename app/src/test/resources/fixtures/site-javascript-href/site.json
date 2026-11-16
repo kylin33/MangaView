@@ -1,0 +1,18 @@
+{
+  "name": "JS 跳转站（章节 href 是 javascript:void(0)，真实地址在 data-href）",
+  "baseUrl": "https://jump.example",
+  "input": "https://jump.example/",
+  "routes": [
+    { "match": "prefix:/read/", "page": "reader.html" },
+    { "match": "prefix:/m/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "homeMin": 8,
+    "chapterMin": 12,
+    "chapterTitleLike": 1.0,
+    "imageMin": 8,
+    "searchOnly": false
+  }
+}

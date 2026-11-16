@@ -1,0 +1,19 @@
+{
+  "name": "脚本数据站（章节只在 <script> 的 JSON 里，DOM 容器是空的）",
+  "baseUrl": "https://script.example",
+  "input": "https://script.example/",
+  "routes": [
+    { "match": "prefix:/read/", "page": "reader.html" },
+    { "match": "prefix:/book/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "homeMin": 6,
+    "chapterMin": 15,
+    "chapterTitleLike": 0.9,
+    "imageMin": 10,
+    "searchOnly": false,
+    "usesScriptDetail": true
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "标准漫画站（列表 / 章节 / 正文图齐全，带推荐位干扰）",
+  "baseUrl": "https://normal.example",
+  "input": "https://normal.example/",
+  "routes": [
+    { "match": "prefix:/search?keyword=", "page": "search.html" },
+    { "match": "prefix:/comic/", "page": "detail.html" },
+    { "match": "prefix:/read/", "page": "reader.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://normal.example",
+    "homeMin": 12,
+    "homeTitleMaxUntitled": 0,
+    "chapterMin": 40,
+    "chapterTitleLike": 0.9,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "searchPath": "/search?keyword={keyword}",
+    "searchOnly": false
+  }
+}

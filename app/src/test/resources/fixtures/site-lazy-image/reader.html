@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>浮岛纪事 1 - 懒加载站</title>
+</head>
+<body>
+<div class="bar"><a href="/manga/2001">目录</a><a href="/manga/2001/2">下一话</a></div>
+
+<!-- 前 8 张懒加载，后 2 张直接给 src：取值链必须带 src 兜底，否则会少两页 -->
+<div class="view">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/01.jpg" alt="第 1 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/02.jpg" alt="第 2 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/03.jpg" alt="第 3 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/04.jpg" alt="第 4 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/05.jpg" alt="第 5 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/06.jpg" alt="第 6 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/07.jpg" alt="第 7 页">
+    <img src="/static/blank.gif" data-original="/upload/2001/1/08.jpg" alt="第 8 页">
+    <img src="/upload/2001/1/09.jpg" alt="第 9 页">
+    <img src="/upload/2001/1/10.jpg" alt="第 10 页">
+</div>
+</body>
+</html>

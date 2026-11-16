@@ -43,7 +43,10 @@ import java.net.URLEncoder
  * 3. **产物要能自检**。生成的 JSON 会再走一遍 [SourceParser]，确保用户保存时不会遇到
  *    在识别阶段没暴露出来的格式问题。
  */
-class SourceAutoGenerator(private val http: JsoupHttpClient) {
+class SourceAutoGenerator(private val pages: PageFetcher) {
+
+    /** 常规构造：真连真抓。测试用注入的 [PageFetcher] 走同一套识别代码 */
+    constructor(http: JsoupHttpClient) : this(PageFetcher.http(http))
 
     data class Report(
         val baseUrl: String,
@@ -731,7 +734,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
         }
 
         try {
-            val doc = http.get(url = httpsUrl, referer = "https://$host/")
+            val doc = pages.get(httpsUrl, "https://$host/", trustAllCerts = false, allowPlainHttp = false)
             onStep("已连接（HTTPS）")
             // 以页面最终落地的地址为准。
             // 很多站把 http 301 到 https（也有反过来的），如果这里还用请求时的 scheme，
@@ -764,7 +767,7 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
      * 确认之后会按策略重新取一次。
      */
     private fun httpReachable(url: String): Boolean = runCatching {
-        http.get(url = url, referer = "", allowPlainHttp = true)
+        pages.get(url, referer = "", trustAllCerts = false, allowPlainHttp = true)
         true
     }.getOrDefault(false)
 
@@ -811,8 +814,8 @@ class SourceAutoGenerator(private val http: JsoupHttpClient) {
 
     private fun fetch(url: String, referer: String, policy: InsecurePolicy): Document =
         try {
-            // 5xx/超时的重试在 JsoupHttpClient 里统一做，这里只负责把错误翻译成人话
-            http.get(
+            // 5xx/超时的重试在客户端里统一做，这里只负责把错误翻译成人话
+            pages.get(
                 url = url,
                 referer = referer,
                 trustAllCerts = policy.trustAllCerts,

@@ -1,0 +1,21 @@
+{
+  "name": "苹果CMS 风格站（封面用背景图，没有 img 标签）",
+  "baseUrl": "https://mac.example",
+  "input": "https://mac.example/",
+  "routes": [
+    { "match": "prefix:/play/", "page": "reader.html" },
+    { "match": "prefix:/detail/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "homeMin": 10,
+    "homeTitleMaxUntitled": 0,
+    "homeCoverHost": "mac.example",
+    "chapterMin": 12,
+    "chapterTitleLike": 0.9,
+    "imageMin": 12,
+    "imageDistinctRatio": 1.0,
+    "searchOnly": false
+  }
+}

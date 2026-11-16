@@ -1,0 +1,20 @@
+{
+  "name": "仅搜索站（首页排行榜由脚本渲染，HTML 里没有列表）",
+  "baseUrl": "https://spa.example",
+  "input": "https://spa.example/",
+  "routes": [
+    { "match": "prefix:/search?keyword=", "page": "search.html" },
+    { "match": "prefix:/read/", "page": "reader.html" },
+    { "match": "prefix:/comic/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "homeMin": 0,
+    "chapterMin": 20,
+    "imageMin": 8,
+    "searchPath": "/search?keyword={keyword}",
+    "searchOnly": true,
+    "warningContains": "找不到排行榜"
+  }
+}

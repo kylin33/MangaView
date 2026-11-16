@@ -1,0 +1,19 @@
+{
+  "name": "分站站（首页在 portal，作品链接全指向 mirror 域名）",
+  "baseUrl": "https://portal.example",
+  "input": "https://portal.example/",
+  "routes": [
+    { "match": "prefix:/read/", "page": "reader.html" },
+    { "match": "prefix:/comic/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://mirror.example",
+    "homeMin": 8,
+    "chapterMin": 12,
+    "imageMin": 8,
+    "imageHost": "img.mirror.example",
+    "searchOnly": false
+  }
+}

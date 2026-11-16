@@ -1,0 +1,12 @@
+{
+  "name": "非漫画站（纯文档列表，没有封面图）",
+  "baseUrl": "https://docs.example",
+  "input": "https://docs.example/",
+  "routes": [
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "failed",
+    "failureContains": "列表"
+  }
+}

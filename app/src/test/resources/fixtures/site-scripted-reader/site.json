@@ -1,0 +1,14 @@
+{
+  "name": "接口下发站（阅读页正文由 JS 接口返回，HTML 里没有图片）",
+  "baseUrl": "https://api-reader.example",
+  "input": "https://api-reader.example/",
+  "routes": [
+    { "match": "prefix:/view/", "page": "reader.html" },
+    { "match": "prefix:/book/", "page": "detail.html" },
+    { "match": "exact:/", "page": "home.html" }
+  ],
+  "expect": {
+    "outcome": "failed",
+    "failureContains": "接口另行下发"
+  }
+}

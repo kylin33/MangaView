@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>无声剧场 第 1 话 - 接口下发站</title>
+</head>
+<body>
+<h1>无声剧场 第 1 话</h1>
+
+<!-- 正文容器是空的，图片由接口另行下发（真实站点还会加密），补选择器也没用 -->
+<div id="chaptercontent" class="content"></div>
+
+<script>
+    var reader_grant = "b7c1e0f4a9d2";
+
+    function loadContent() {
+        fetch("/api/chapter_reader?id=3001-1&grant=" + reader_grant)
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                document.getElementById("chaptercontent").innerHTML = d.html;
+            });
+    }
+    loadContent();
+</script>
+</body>
+</html>
