@@ -48,12 +48,18 @@ class FixtureSite private constructor(
         val homeMin: Int? = null,
         val homeTitleMaxUntitled: Int? = null,
         val homeCoverHost: String? = null,
+        /** 书名里不允许出现的字样：用来证明抓的不是推广位（「推广 1」「广告位」） */
+        val homeTitleForbid: List<String> = emptyList(),
+        /** 封面地址里不允许出现的字样：占位图、推广图 */
+        val homeCoverForbid: List<String> = emptyList(),
         val chapterMin: Int? = null,
         val chapterTitleLike: Double? = null,
         val imageMin: Int? = null,
         val imageDistinctRatio: Double? = null,
         val imageLast: String? = null,
         val imageHost: String? = null,
+        /** 正文图地址里不允许出现的字样：1x1 占位、base64、相对预览图 */
+        val imageForbid: List<String> = emptyList(),
         val searchOnly: Boolean? = null,
         val usesScriptDetail: Boolean? = null,
         val warningContains: String? = null,
@@ -111,12 +117,15 @@ class FixtureSite private constructor(
             homeMin = json.intOrNull("homeMin"),
             homeTitleMaxUntitled = json.intOrNull("homeTitleMaxUntitled"),
             homeCoverHost = json.stringOrNull("homeCoverHost"),
+            homeTitleForbid = json.stringList("homeTitleForbid"),
+            homeCoverForbid = json.stringList("homeCoverForbid"),
             chapterMin = json.intOrNull("chapterMin"),
             chapterTitleLike = json.doubleOrNull("chapterTitleLike"),
             imageMin = json.intOrNull("imageMin"),
             imageDistinctRatio = json.doubleOrNull("imageDistinctRatio"),
             imageLast = json.stringOrNull("imageLast"),
             imageHost = json.stringOrNull("imageHost"),
+            imageForbid = json.stringList("imageForbid"),
             searchOnly = json.booleanOrNull("searchOnly"),
             usesScriptDetail = json.booleanOrNull("usesScriptDetail"),
             warningContains = json.stringOrNull("warningContains"),
@@ -140,6 +149,12 @@ class FixtureSite private constructor(
 
         private fun JSONObject.booleanOrNull(key: String): Boolean? =
             if (has(key) && !isNull(key)) getBoolean(key) else null
+
+        private fun JSONObject.stringList(key: String): List<String> {
+            if (!has(key) || isNull(key)) return emptyList()
+            val array = getJSONArray(key)
+            return (0 until array.length()).map { array.getString(it) }
+        }
 
         /** 从请求地址里取出 keyword 参数（仅支持查询串形式，夹具只登记这种） */
         private fun keywordOf(url: String): String {

@@ -64,6 +64,8 @@ data class ListFacts(
     val boilerplate: Boolean = false,
     /** 章节场景：标题像「第 N 话」的比例。首页为 null */
     val chapterLike: Double? = null,
+    /** 语义加成（class/id/alt/URL 是否在说「这是个作品或章节列表」），见 [Semantics] */
+    val semantic: Double = 0.0,
     /** 候选来源的微弱加分，用于同分时偏向结构化规则 */
     val originBonus: Double = 0.0
 )
@@ -146,7 +148,12 @@ object ListScorer {
             weights.title * title +
             weights.url * url +
             weights.structure * structure
-        val total = (base + facts.originBonus - penalties.sumOf { it.value }).coerceIn(0.0, 1.0)
+        // 只截下限，不截上限：这个分数是排序键，不是概率。
+        // 曾经截到 1.0，结果「25 条」和「10 条」两个候选都被加成顶到天花板，
+        // 排序退化成插入顺序，页面上先出现的小板块就赢了 —— 和加法本身无关，
+        // 是上限把仅剩的区分度抹掉了。
+        val total = (base + facts.semantic + facts.originBonus - penalties.sumOf { it.value })
+            .coerceAtLeast(0.0)
 
         return ListScore(total, count, image, title, url, structure, penalties)
     }

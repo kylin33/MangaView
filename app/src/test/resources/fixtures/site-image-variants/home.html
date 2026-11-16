@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>多变体图片站</title>
+</head>
+<body>
+    <header class="header"><nav class="nav"><a href="/">首页</a></nav></header>
+
+    <main>
+        <!--
+          同一个列表里混了四种图片写法：
+          1) src 是 1x1 占位 gif，真实地址在 data-original；
+          2) 只有 srcset（1x / 2x 两档）；
+          3) src 是 base64 占位，真实地址在 data-lazy-src；
+          4) src 是协议相对地址（双斜杠开头）。
+          只认 src 的实现在这里会抓到 1x1 和 base64。
+        -->
+        <div class="grid">
+        <div class="item">
+            <a class="thumb" href="/comic/1201"><img class="p-1" src="/static/1x1.gif" data-original="/upload/cover/1201.jpg" alt="夜色霓虹"></a>
+            <span class="name">夜色霓虹</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1202"><img class="p-1" src="/static/1x1.gif" data-original="/upload/cover/1202.jpg" alt="第二人生"></a>
+            <span class="name">第二人生</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1203"><img class="p-1" src="/static/1x1.gif" data-original="/upload/cover/1203.jpg" alt="荆棘之城"></a>
+            <span class="name">荆棘之城</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1204"><img class="p-1" srcset="/upload/cover/1204.jpg 1x, /upload/cover/1204@2x.jpg 2x" alt="午夜书店"></a>
+            <span class="name">午夜书店</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1205"><img class="p-1" srcset="/upload/cover/1205.jpg 1x, /upload/cover/1205@2x.jpg 2x" alt="南方来信"></a>
+            <span class="name">南方来信</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1206"><img class="p-1" srcset="/upload/cover/1206.jpg 1x, /upload/cover/1206@2x.jpg 2x" alt="海边的房间"></a>
+            <span class="name">海边的房间</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1207"><img class="p-1" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-lazy-src="/upload/cover/1207.jpg" alt="旧日回声"></a>
+            <span class="name">旧日回声</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1208"><img class="p-1" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-lazy-src="/upload/cover/1208.jpg" alt="镜中人"></a>
+            <span class="name">镜中人</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1209"><img class="p-1" src="//cdn.imgvar.example/upload/cover/1209.jpg" alt="雨夜列车"></a>
+            <span class="name">雨夜列车</span>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/1210"><img class="p-1" src="//cdn.imgvar.example/upload/cover/1210.jpg" alt="无声告白"></a>
+            <span class="name">无声告白</span>
+        </div>
+        </div>
+    </main>
+</body>
+</html>

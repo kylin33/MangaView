@@ -106,6 +106,21 @@ class AutoGeneratorFixtureTest(private val site: FixtureSite) {
                 wrong.isEmpty()
             )
         }
+        site.expect.homeTitleForbid.forEach { needle ->
+            val bad = home.filter { it.title.contains(needle) }
+            assertTrue(
+                "首页抓到了 ${bad.size} 条「$needle」开头的条目（${bad.take(3).map { it.title }}），" +
+                    "选中的多半是推广位而不是作品列表",
+                bad.isEmpty()
+            )
+        }
+        site.expect.homeCoverForbid.forEach { needle ->
+            val bad = home.filter { it.coverUrl.contains(needle) }
+            assertTrue(
+                "封面地址里出现了「$needle」：${bad.take(3).map { it.coverUrl }}",
+                bad.isEmpty()
+            )
+        }
 
         val chapters = PageParser.chapters(
             site.document("detail.html", site.baseUrl + "/"),
@@ -153,6 +168,13 @@ class AutoGeneratorFixtureTest(private val site: FixtureSite) {
         site.expect.imageHost?.let { host ->
             val wrong = images.filterNot { SourceAutoDetector.hostOf(it) == host }
             assertTrue("图片地址域名不对：${wrong.take(3)}", wrong.isEmpty())
+        }
+        site.expect.imageForbid.forEach { needle ->
+            val bad = images.filter { it.contains(needle) }
+            assertTrue(
+                "正文图里出现了「$needle」：${bad.take(3)}。占位图/预览图被当成真实地址了",
+                bad.isEmpty()
+            )
         }
     }
 

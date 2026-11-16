@@ -1,0 +1,46 @@
+{
+  "name": "多变体图片站（srcset / 背景图 / 协议相对 / 1x1 与 base64 占位混排）",
+  "baseUrl": "https://imgvar.example",
+  "input": "https://imgvar.example/",
+  "routes": [
+    {
+      "match": "prefix:/search?keyword=",
+      "page": "search.html"
+    },
+    {
+      "match": "prefix:/comic/",
+      "page": "detail.html"
+    },
+    {
+      "match": "prefix:/read/",
+      "page": "reader.html"
+    },
+    {
+      "match": "exact:/",
+      "page": "home.html"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://imgvar.example",
+    "homeMin": 10,
+    "homeTitleMaxUntitled": 0,
+    "homeCoverForbid": [
+      "1x1",
+      "data:image",
+      "blank"
+    ],
+    "chapterMin": 30,
+    "chapterTitleLike": 0.9,
+    "imageMin": 12,
+    "imageForbid": [
+      "1x1",
+      "data:image",
+      "blank",
+      "cover.jpg"
+    ],
+    "imageDistinctRatio": 1.0,
+    "searchPath": "/search?keyword={keyword}",
+    "searchOnly": false
+  }
+}

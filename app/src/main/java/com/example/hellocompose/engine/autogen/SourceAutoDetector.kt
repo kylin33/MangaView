@@ -115,10 +115,29 @@ object SourceAutoDetector {
             },
             structureConsistency = signature.consistency(members),
             boilerplate = Dom.isBoilerplate(candidate.container),
+            // class 不可靠时（item-123 这种），语义是唯一能把「作品列表」和
+            // 「推广位」分开的线索；但它只做小幅偏向，不足以单独决定胜负
+            semantic = Semantics.listBonus(candidate.container, members) +
+                Semantics.urlBonus(memberUrls(members, baseUrl)),
             originBonus = candidate.origin.bonus
         )
         return HomeGuess(rule, ListScorer.score(facts, ScoreWeights.HOME).total, parsed)
     }
+
+    /**
+     * 成员的跳转地址，用来做 URL 语义判断。
+     *
+     * 这里只认常规 `href`，不试 `data-href`：地址语义是可选的加分项，
+     * 而 JS 跳转站点的真实地址本来就要靠 [pickUrlRule] 单独试出来，
+     * 在这一步重复一遍只会让代码更长、也更容易把封面图地址当成员地址。
+     */
+    private fun memberUrls(members: List<Element>, baseUrl: String): List<String> =
+        members.take(10).mapNotNull { member ->
+            val raw = member.attr("href").ifBlank {
+                member.selectFirst("a[href]")?.attr("href").orEmpty()
+            }
+            if (raw.isBlank()) null else UrlResolver.resolve(raw, baseUrl)
+        }
 
     // ==================== 章节列表 ====================
 
@@ -167,6 +186,8 @@ object SourceAutoDetector {
             structureConsistency = signature.consistency(members),
             boilerplate = Dom.isBoilerplate(candidate.container),
             chapterLike = ratio,
+            semantic = Semantics.listBonus(candidate.container, members) +
+                Semantics.urlBonus(memberUrls(members, baseUrl), chapterMode = true),
             originBonus = candidate.origin.bonus
         )
         return ChapterGuess(rule, ListScorer.score(facts, ScoreWeights.CHAPTERS).total, parsed, ratio)
@@ -196,7 +217,11 @@ object SourceAutoDetector {
                 ?: continue
             val attrOrder = ImageSignals.attrOrder(members)
 
-            for (itemSelector in listOf("$parentSelector > img", "$parentSelector img")) {
+            // 除了「容器下的 img」，还要试「载体自身的标签 + class」：
+            // 有些站整页用背景图分页（<div class="page" style="background-image:url(...)">），
+            // 页面里一张 img 都没有，只试 img 的话正文图恒为空
+            val carrierSelectors = members.mapNotNull { Dom.selfSelector(it) }.distinct().take(2)
+            for (itemSelector in listOf("$parentSelector > img", "$parentSelector img") + carrierSelectors) {
                 if (!seen.add(itemSelector)) continue
                 val rule = ReaderRule(
                     item = itemSelector,
@@ -275,7 +300,8 @@ object SourceAutoDetector {
     private fun pickUrlRule(
         items: List<Element>,
         baseUrl: String,
-        allowClosest: Boolean
+        allowClosest: Boolean,
+        preferChapter: Boolean = false
     ): FieldRule? {
         if (items.isEmpty()) return null
 
@@ -295,15 +321,40 @@ object SourceAutoDetector {
         }
 
         var best: FieldRule? = null
+        var bestRank = 0.0
         var bestQuality = 0.0
         for (candidate in candidates) {
-            val q = linkQuality(items, candidate, baseUrl)
-            if (q > bestQuality) {
-                bestQuality = q
+            val quality = linkQuality(items, candidate, baseUrl)
+            // 命中率相同时，用地址语义偏向「像详情页/像章节」的那个属性。
+            // 典型场景：卡片里既有封面链接又有标题链接，两者都能取到地址，
+            // 但只有标题链接指向详情页；语义加成让同分时候选更倾向它
+            val rank = quality + urlSemanticBonus(items, candidate, baseUrl, preferChapter)
+            if (rank > bestRank) {
+                bestRank = rank
+                bestQuality = quality
                 best = candidate
             }
         }
+        // 阈值只看命中率，不能被语义加成拉过线
         return best?.takeIf { bestQuality >= 0.6 }
+    }
+
+    /** 地址语义加成：只做同分时的偏向，最多 0.04 */
+    private fun urlSemanticBonus(
+        items: List<Element>,
+        rule: FieldRule,
+        baseUrl: String,
+        preferChapter: Boolean
+    ): Double {
+        val urls = items.take(6).mapNotNull { item ->
+            val raw = item.pickByRule(rule).readByRule(rule.attr)
+            if (raw.isBlank()) null else UrlResolver.resolve(raw, baseUrl)
+        }
+        if (urls.isEmpty()) return 0.0
+        val hit = urls.count { url ->
+            if (preferChapter) Semantics.looksLikeChapterUrl(url) else Semantics.looksLikeDetailUrl(url)
+        }
+        return hit.toDouble() / urls.size * 0.04
     }
 
     /** 把跳转交给 JS 的站点，真实地址通常挂在这几个属性上 */
@@ -380,8 +431,22 @@ object SourceAutoDetector {
         }
         if (candidates.isEmpty()) return null
 
+        // 语义候选：条目里那个「名字里写着 cover/thumb/poster」的节点。
+        // 它常常比 img 更准 —— 卡片里可能还塞了作者头像、评分星标这类同标签干扰项
+        carriers.filter { carrier -> items.none { it === carrier } }
+            .filter { carrier -> Semantics.score(carrier, Semantics.Role.COVER) >= 1.0 }
+            .groupingBy { Dom.signature(it) }
+            .eachCount()
+            .filterKeys { it.contains('.') }
+            .entries
+            .sortedByDescending { it.value }
+            .take(2)
+            .forEach { (signature, _) ->
+                candidates += FieldRule(select = signature, attr = ImageSignals.attrOrder(carriers))
+            }
+
         return candidates
-            .maxByOrNull { coverQuality(items, it) }
+            .maxByOrNull { coverQuality(items, it) + semanticBias(items, it, Semantics.Role.COVER, emptyList()) }
             ?.takeIf { coverQuality(items, it) >= 0.5 }
     }
 
@@ -395,30 +460,107 @@ object SourceAutoDetector {
         return ok.toDouble() / items.size
     }
 
+    /**
+     * 挑书名取值规则。
+     *
+     * 候选里既有「标签位置」这类结构猜测（h2/h3/a），也有从语义推出来的
+     * 「条目里那个叫 title / book-name 的节点」。结构猜测对模板站很准，
+     * 但对 class 全是 `item-123` 的站点就完全失效 —— 两条路都要走。
+     */
     private fun pickTitleRule(items: List<Element>): FieldRule {
-        val candidates = listOf(
-            FieldRule(select = "img", attr = "alt"),
-            FieldRule(select = "", attr = "alt"),
-            FieldRule(select = "a", attr = "title"),
-            FieldRule(select = "h3", attr = "text"),
-            FieldRule(select = "h2", attr = "text"),
-            FieldRule(select = "a", attr = "text"),
-            // 封面 <a> 里没有文字时，标题往往在同一层级的第二个 <a> 上
-            FieldRule(select = "a:nth-of-type(2)", attr = "text"),
-            FieldRule(select = "", attr = "title"),
-            FieldRule(select = "", attr = "text")
-        )
+        val candidates = ArrayList<FieldRule>()
+        // 语义候选排在前面：同分时优先选「名字里就写着 title」的那个
+        semanticElementCandidates(items, Semantics.Role.TITLE).forEach {
+            candidates += FieldRule(select = it, attr = "text")
+        }
+        candidates += FieldRule(select = "[itemprop=name]", attr = "text")
+        candidates += FieldRule(select = "img", attr = "alt")
+        candidates += FieldRule(select = "", attr = "alt")
+        candidates += FieldRule(select = "a", attr = "title")
+        candidates += FieldRule(select = "h3", attr = "text")
+        candidates += FieldRule(select = "h2", attr = "text")
+        candidates += FieldRule(select = "a", attr = "text")
+        // 封面 <a> 里没有文字时，标题往往在同一层级的第二个 <a> 上
+        candidates += FieldRule(select = "a:nth-of-type(2)", attr = "text")
+        candidates += FieldRule(select = "", attr = "title")
+        candidates += FieldRule(select = "", attr = "text")
 
         var best = FieldRule(select = "", attr = "text")
-        var bestQuality = -1.0
+        var bestRank = -1.0
         for (candidate in candidates) {
-            val q = titleQuality(items, candidate)
-            if (q > bestQuality) {
-                bestQuality = q
+            val rank = titleQuality(items, candidate) + semanticBias(
+                items, candidate, good = Semantics.Role.TITLE,
+                bad = listOf(Semantics.Role.AUTHOR, Semantics.Role.NAV, Semantics.Role.AD)
+            )
+            if (rank > bestRank) {
+                bestRank = rank
                 best = candidate
             }
         }
         return best
+    }
+
+    /**
+     * 从条目内部找出「语义上承担某个角色」的后代，按签名聚成选择器候选。
+     *
+     * 只看后三代：书名节点几乎不会埋在更深处，而往下翻得越多越容易在
+     * 广告条、推荐位里撞到同名 class。
+     */
+    private fun semanticElementCandidates(
+        items: List<Element>,
+        role: Semantics.Role
+    ): List<String> {
+        if (items.isEmpty()) return emptyList()
+
+        val counter = HashMap<String, Int>()
+        for (item in items) {
+            val seen = LinkedHashSet<String>()
+            for (el in descendantsWithin(item, depth = 3)) {
+                if (Semantics.score(el, role) < 1.0) continue
+                val signature = Dom.signature(el)
+                // 没有 class 的后代拼不出稳定选择器，交给结构候选去覆盖
+                if (!signature.contains('.')) continue
+                seen += signature
+            }
+            seen.forEach { counter[it] = (counter[it] ?: 0) + 1 }
+        }
+
+        val threshold = maxOf(1, (items.size * 0.5).toInt())
+        return counter.entries
+            .filter { it.value >= threshold }
+            .sortedByDescending { it.value }
+            .take(2)
+            .map { it.key }
+    }
+
+    private fun descendantsWithin(root: Element, depth: Int): List<Element> {
+        val out = ArrayList<Element>()
+        var layer = root.children().toList()
+        var level = 1
+        while (layer.isNotEmpty() && level <= depth) {
+            out += layer
+            layer = layer.flatMap { it.children() }
+            level++
+        }
+        return out
+    }
+
+    /**
+     * 语义偏向：目标节点「名字里写着标题」加分，「写着作者/导航/广告」减分。
+     *
+     * 幅度只有 0.06，低于「质量差 10%」的量级 —— 语义用来打破平局，不是用来翻盘。
+     */
+    private fun semanticBias(
+        items: List<Element>,
+        rule: FieldRule,
+        good: Semantics.Role,
+        bad: List<Semantics.Role>
+    ): Double {
+        val targets = items.take(8).mapNotNull { it.pickByRule(rule) }
+        if (targets.isEmpty()) return 0.0
+        val goodHits = targets.count { Semantics.score(it, good) >= 1.0 }
+        val badHits = targets.count { target -> bad.any { Semantics.score(target, it) >= 1.0 } }
+        return (goodHits - badHits).toDouble() / targets.size * 0.06
     }
 
     /** 标题里掺了这些字样，说明取到的是作者/简介行，不是书名 */
@@ -431,23 +573,28 @@ object SourceAutoDetector {
 
     /** 取到的这段文本能不能当书名用：长度合理、有实义字符、不是「作者：xxx」这种整块信息 */
     private fun isUsableTitle(item: Element, rule: FieldRule): Boolean {
-        val text = item.pickByRule(rule).readByRule(rule.attr)
+        // 和运行时用同一个取值函数：评分看到空、运行时却拿到文字（或者反过来），
+        // 会让「同一套规则识别时通过、跑起来全叫未命名」
+        val text = PageParser.titleText(item, rule)
         if (text.length !in 2..90) return false
         if (text.count { it.isLetterOrDigit() } < 2) return false
         return !TITLE_NOISE.containsMatchIn(text)
     }
 
     private fun pickChapterUrlRule(items: List<Element>, baseUrl: String): FieldRule? =
-        pickUrlRule(items = items, baseUrl = baseUrl, allowClosest = true)
+        pickUrlRule(items = items, baseUrl = baseUrl, allowClosest = true, preferChapter = true)
 
     private fun pickChapterTitleRule(items: List<Element>): FieldRule {
-        val candidates = listOf(
-            FieldRule(select = "", attr = "text"),
-            FieldRule(select = "a", attr = "text"),
-            FieldRule(select = "a", attr = "title"),
-            FieldRule(select = "span", attr = "text"),
-            FieldRule(select = "", attr = "title")
-        )
+        val candidates = ArrayList<FieldRule>()
+        // 名字里写着 chapter/episode 的节点排在前面：章节名常被书名、更新时间挤在同一个 a 里
+        semanticElementCandidates(items, Semantics.Role.CHAPTER).forEach {
+            candidates += FieldRule(select = it, attr = "text")
+        }
+        candidates += FieldRule(select = "", attr = "text")
+        candidates += FieldRule(select = "a", attr = "text")
+        candidates += FieldRule(select = "a", attr = "title")
+        candidates += FieldRule(select = "span", attr = "text")
+        candidates += FieldRule(select = "", attr = "title")
 
         var best = FieldRule(select = "", attr = "text")
         var bestQuality = -1.0
@@ -462,7 +609,9 @@ object SourceAutoDetector {
             // 长度只做弱惩罚。很多站把书名缀在 title 属性里（「书名-第3话-…」），
             // 同一个章节 a.text 才是干净的章节名；两者填满率一样时必须选短的，
             // 否则界面上每一条章节都会重复显示书名。
-            val q = filled * 10.0 + chapterish * 20.0 - avgLen * 0.02
+            // 语义项按同一量纲放大（×10），否则 0.06 的偏差在这个量级里看不见
+            val q = filled * 10.0 + chapterish * 20.0 - avgLen * 0.02 +
+                semanticBias(items, candidate, Semantics.Role.CHAPTER, emptyList()) * 10.0
             if (q > bestQuality) {
                 bestQuality = q
                 best = candidate
