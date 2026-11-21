@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "example-template",
   "name": "示例模板（未启用）",
-  "description": "复制本文件改名，改 id 和 baseUrl，按目标站点写好 4 组选择器，再把 enabled 改成 true，左侧菜单就会出现。字段含义见项目 README 的「站点配置 JSON 说明」。",
+  "description": "复制本文件改名，改 id 和 baseUrl，按目标站点写好 4 组选择器，再把 enabled 改成 true，左侧菜单就会出现。字段含义见 docs/CONFIG.md。",
   "baseUrl": "https://example.com",
   "enabled": false,
   "referer": "{baseUrl}/",
