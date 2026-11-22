@@ -63,6 +63,19 @@ object SourceJson {
 
     private fun listRule(rule: ListRule): JSONObject = JSONObject().apply {
         put("path", rule.path)
+        // 下面三项只在「不是默认值」时写出来。
+        // 绝大多数配置是普通的 GET + {keyword} 模板，多写三行只会让人以为它们必须填。
+        if (rule.method != HttpMethod.GET) put("method", rule.method.token)
+        if (rule.keywordParam != SearchRequestBuilder.DEFAULT_KEYWORD_PARAM &&
+            !rule.path.contains(SearchRequestBuilder.KEYWORD)
+        ) {
+            put("keywordParam", rule.keywordParam)
+        }
+        if (rule.fields.isNotEmpty()) {
+            put("fields", JSONObject().apply {
+                rule.fields.forEach { (key, value) -> put(key, value) }
+            })
+        }
         put("item", rule.item)
         put("link", field(rule.link))
         put("cover", field(rule.cover))

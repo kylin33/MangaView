@@ -1,0 +1,38 @@
+{
+  "name": "site-search-post",
+  "baseUrl": "https://normal.example",
+  "input": "https://normal.example/",
+  "routes": [
+    {
+      "match": "prefix:/search.php",
+      "page": "search.html"
+    },
+    {
+      "match": "prefix:/comic/",
+      "page": "detail.html"
+    },
+    {
+      "match": "prefix:/read/",
+      "page": "reader.html"
+    },
+    {
+      "match": "exact:/",
+      "page": "home.html"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://normal.example",
+    "homeMin": 12,
+    "chapterMin": 40,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "searchOnly": false,
+    "searchPath": "/search.php",
+    "searchMethod": "post",
+    "searchKeywordParam": "searchword",
+    "searchFields": {
+      "type": "1"
+    }
+  }
+}

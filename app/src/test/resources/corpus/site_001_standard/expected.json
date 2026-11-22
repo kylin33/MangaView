@@ -5,6 +5,7 @@
   "input": "https://manga-a.example/",
   "routes": [
     { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/search?keyword=", "page": "search.html" },
     { "match": "prefix:/detail/1001", "page": "detail_001.html" },
     { "match": "prefix:/detail/1002", "page": "detail_002.html" },
     { "match": "prefix:/read/", "page": "reader.html" }
@@ -29,5 +30,6 @@
     "imageAttr": "src",
     "expectedImageCount": 14
   },
+  "search": { "minItems": 3 },
   "notes": "最常见的一类站：列表容器 + 重复条目，标题在 h3>a 里，封面是 data-src 懒加载。干扰项是顶部 4 个推广位和侧栏 8 条排行——两者结构同样规整，只能靠条数和语义分开。"
 }

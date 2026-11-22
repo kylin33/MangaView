@@ -11,6 +11,7 @@ import com.example.hellocompose.data.source.ListRule
 import com.example.hellocompose.data.source.ReaderRule
 import com.example.hellocompose.data.source.ScriptData
 import com.example.hellocompose.data.source.ScriptRule
+import com.example.hellocompose.data.source.TitleNormalizer
 import com.example.hellocompose.data.source.pickByRule
 import com.example.hellocompose.data.source.readByRule
 import org.json.JSONArray
@@ -41,7 +42,9 @@ object SourceAutoDetector {
     data class HomeGuess(
         val rule: ListRule,
         val score: Double,
-        val items: List<Manga>
+        val items: List<Manga>,
+        /** 这份规则靠什么抓到的（列表/封面/标题各自的通道），进识别报告 */
+        val capabilities: SiteCapabilities = SiteCapabilities()
     )
 
     data class ChapterGuess(
@@ -49,13 +52,15 @@ object SourceAutoDetector {
         val score: Double,
         val items: List<Chapter>,
         /** 标题形如「第 12 话」的比例。用来把章节列表和「相关推荐」区分开 */
-        val chapterLikeRatio: Double
+        val chapterLikeRatio: Double,
+        val capabilities: SiteCapabilities = SiteCapabilities()
     )
 
     data class ReaderGuess(
         val rule: ReaderRule,
         val score: Double,
-        val images: List<String>
+        val images: List<String>,
+        val capabilities: SiteCapabilities = SiteCapabilities()
     )
 
     // ==================== 首页列表 ====================
@@ -86,9 +91,27 @@ object SourceAutoDetector {
         val members = candidate.members
         if (members.size < minSize) return null
 
-        val cover = pickCoverRule(members) ?: return null
+        // 先回答「这个列表靠什么承载封面和标题」，再按答案挑规则。
+        // 探测只用条目自身的事实（多少条带 data-src、多少条带背景图……），
+        // 不做猜测，所以规则挑选和报告里写的是同一件事
+        val coverCap = CapabilityProbe.cover(members)
+        val titleCap = CapabilityProbe.title(members)
+        val capabilities = SiteCapabilities(
+            list = if (candidate.origin == ListCandidate.Origin.IMAGE_STRIP) {
+                Channel.IMAGE_STRIP
+            } else {
+                Channel.DOM
+            },
+            listStrength = 1.0,
+            cover = coverCap.first,
+            coverStrength = coverCap.second,
+            title = titleCap.first,
+            titleStrength = titleCap.second
+        )
+
+        val cover = pickCoverRule(members, capabilities.cover) ?: return null
         val link = pickLinkRule(members, baseUrl) ?: return null
-        val title = pickTitleRule(members)
+        val title = pickTitleRule(members, link, capabilities.title)
 
         val rule = ListRule(
             path = "/",
@@ -106,7 +129,9 @@ object SourceAutoDetector {
             imageValid = members.count { member ->
                 ImageSignals.looksLikeImage(member.pickByRule(cover).readByRule(cover.attr))
             },
-            titleValid = members.count { member -> isUsableTitle(member, title) },
+            titleValid = members.count { member ->
+                isUsableTitle(member, title, member.pickByRule(link))
+            },
             urlValid = members.count { member -> isUsableUrl(member, link, baseUrl) },
             distinctTitles = parsed.map { it.title }.distinct().size,
             distinctUrls = parsed.map { it.detailUrl }.distinct().size,
@@ -121,7 +146,7 @@ object SourceAutoDetector {
                 Semantics.urlBonus(memberUrls(members, baseUrl)),
             originBonus = candidate.origin.bonus
         )
-        return HomeGuess(rule, ListScorer.score(facts, ScoreWeights.HOME).total, parsed)
+        return HomeGuess(rule, ListScorer.score(facts, ScoreWeights.HOME).total, parsed, capabilities)
     }
 
     /**
@@ -172,13 +197,17 @@ object SourceAutoDetector {
         if (!isChapterLinkSet(parsed)) return null
 
         val ratio = parsed.count { isChapterLike(it.title) }.toDouble() / parsed.size
+        val titleCap = CapabilityProbe.title(members)
         val facts = ListFacts(
             matchedCount = members.size,
             itemCount = parsed.size,
             // 章节列表没有封面，这一项在 CHAPTERS 权重里是 0
             imageValid = 0,
             titleValid = members.count { member ->
-                member.pickByRule(title).readByRule(title.attr).length in 1..120
+                TitleNormalizer.merge(
+                    member.pickByRule(title).readByRule(title.attr),
+                    member.pickByRule(url)?.attr("title").orEmpty()
+                ).length in 1..120
             },
             urlValid = members.count { member -> isUsableUrl(member, url, baseUrl) },
             distinctTitles = parsed.map { it.title }.distinct().size,
@@ -190,7 +219,17 @@ object SourceAutoDetector {
                 Semantics.urlBonus(memberUrls(members, baseUrl), chapterMode = true),
             originBonus = candidate.origin.bonus
         )
-        return ChapterGuess(rule, ListScorer.score(facts, ScoreWeights.CHAPTERS).total, parsed, ratio)
+        return ChapterGuess(
+            rule,
+            ListScorer.score(facts, ScoreWeights.CHAPTERS).total,
+            parsed,
+            ratio,
+            SiteCapabilities(
+                chapters = Channel.DOM,
+                title = titleCap.first,
+                titleStrength = titleCap.second
+            )
+        )
     }
 
     // ==================== 章节图片 ====================
@@ -230,7 +269,13 @@ object SourceAutoDetector {
                 )
                 val parsed = PageParser.images(doc, rule, baseUrl)
                 if (parsed.isEmpty()) continue
-                out += ReaderGuess(rule, scoreImages(parsed, itemSelector), parsed)
+                val channel = CapabilityProbe.images(members)
+                out += ReaderGuess(
+                    rule,
+                    scoreImages(parsed, itemSelector),
+                    parsed,
+                    SiteCapabilities(images = channel)
+                )
             }
         }
 
@@ -396,7 +441,7 @@ object SourceAutoDetector {
      * 2. `<a data-original="..."><span class="play"></span></a>` —— 苹果CMS 系模板，
      *    图片靠 CSS 背景显示，DOM 里没有 img 元素。只认 img 会把整站判成「没有列表」。
      */
-    private fun pickCoverRule(items: List<Element>): FieldRule? {
+    private fun pickCoverRule(items: List<Element>, prefer: Channel = Channel.NONE): FieldRule? {
         val selfMode = items.count { it.tagName() == "img" } >= items.size * 0.8
         if (selfMode) {
             val rule = FieldRule(select = "", attr = ImageSignals.attrOrder(items))
@@ -446,8 +491,29 @@ object SourceAutoDetector {
             }
 
         return candidates
-            .maxByOrNull { coverQuality(items, it) + semanticBias(items, it, Semantics.Role.COVER, emptyList()) }
+            .maxByOrNull {
+                coverQuality(items, it) +
+                    semanticBias(items, it, Semantics.Role.COVER, emptyList()) +
+                    coverChannelBonus(it, prefer)
+            }
             ?.takeIf { coverQuality(items, it) >= 0.5 }
+    }
+
+    /**
+     * 封面规则的通道偏好。
+     *
+     * 只在两个候选**都能取到图**时起作用：能力探测说这个站封面写在背景图里，
+     * 那 `style` 候选就值得优先；说封面在懒加载属性上，`data-*` 候选就优先。
+     * 幅度 0.05，低于「质量差 10%」，翻了不盘。
+     */
+    private fun coverChannelBonus(rule: FieldRule, prefer: Channel): Double {
+        val attrs = rule.attr.split('|').map { it.trim() }
+        return when (prefer) {
+            Channel.INLINE_BG -> if (attrs.contains("style")) 0.05 else 0.0
+            Channel.LAZY_ATTR -> if (attrs.any { it != "src" && it != "style" }) 0.05 else 0.0
+            Channel.DOM -> if (attrs == listOf("src")) 0.03 else 0.0
+            else -> 0.0
+        }
     }
 
     private fun coverQuality(items: List<Element>, rule: FieldRule): Double {
@@ -467,7 +533,7 @@ object SourceAutoDetector {
      * 「条目里那个叫 title / book-name 的节点」。结构猜测对模板站很准，
      * 但对 class 全是 `item-123` 的站点就完全失效 —— 两条路都要走。
      */
-    private fun pickTitleRule(items: List<Element>): FieldRule {
+    private fun pickTitleRule(items: List<Element>, link: FieldRule, prefer: Channel = Channel.NONE): FieldRule {
         val candidates = ArrayList<FieldRule>()
         // 语义候选排在前面：同分时优先选「名字里就写着 title」的那个
         semanticElementCandidates(items, Semantics.Role.TITLE).forEach {
@@ -488,16 +554,27 @@ object SourceAutoDetector {
         var best = FieldRule(select = "", attr = "text")
         var bestRank = -1.0
         for (candidate in candidates) {
-            val rank = titleQuality(items, candidate) + semanticBias(
+            val rank = titleQuality(items, candidate, link) + semanticBias(
                 items, candidate, good = Semantics.Role.TITLE,
                 bad = listOf(Semantics.Role.AUTHOR, Semantics.Role.NAV, Semantics.Role.AD)
-            )
+            ) + titleChannelBonus(candidate, prefer)
             if (rank > bestRank) {
                 bestRank = rank
                 best = candidate
             }
         }
         return best
+    }
+
+    /**
+     * 标题规则的通道偏好：探测到站点把书名放在链接的 `title` 属性上时，
+     * `a@title` 这类候选优先。幅度 0.05，且只在直接命中率相同时才体现出来。
+     */
+    private fun titleChannelBonus(rule: FieldRule, prefer: Channel): Double = when (prefer) {
+        Channel.LINK_TITLE -> if (rule.attr == "title") 0.05 else 0.0
+        Channel.SEMANTIC_NODE -> if (rule.select.isNotBlank()) 0.03 else 0.0
+        Channel.VISIBLE_TEXT -> if (rule.select.isBlank() && rule.attr == "text") 0.02 else 0.0
+        else -> 0.0
     }
 
     /**
@@ -566,18 +643,45 @@ object SourceAutoDetector {
     /** 标题里掺了这些字样，说明取到的是作者/简介行，不是书名 */
     private val TITLE_NOISE = Regex("""(作者\s*[:：]|简介\s*[:：]|状态\s*[:：]|标签\s*[:：])""")
 
-    private fun titleQuality(items: List<Element>, rule: FieldRule): Double {
+    /**
+     * 标题规则的质量。
+     *
+     * 必须把「规则自己取到」和「靠兜底拼出来」分开算：
+     * [PageParser.titleText] 在规则取空时会退到条目里第一个有文字的节点，
+     * 于是一个**完全匹配不上**的规则（比如站点没有 `[itemprop=name]`）
+     * 也能拿到 100% 的合格率，然后靠候选顺序把正确的规则挤掉。
+     * 这正是「书名带着『14小时前』」的成因 —— 兜底拼的是整个 `<a>` 的文字，
+     * 徽章、角标全在里面。
+     *
+     * 但**不能**给「取到文字」太大权重：老站表格布局里，正确的书名只存在于
+     * 「条目文字去掉作者/更新时间」之后，规则本身取到的往往是一整行脏文本，
+     * 反而是靠兜底才拿到干净值。
+     *
+     * 所以准确率是主项，另外加 0.05 的「这个选择器在页面上真的选得到节点」加分 ——
+     * 它的作用是在两条规则准确率相同时，优先选节点真实存在的那条。
+     * 否则页面上根本没有的 `[itemprop=name]` 会靠兜底拿到 100% 准确率，
+     * 然后因为排在前面而胜出，配置里留下一个永远匹配不上的选择器。
+     */
+    private fun titleQuality(items: List<Element>, rule: FieldRule, link: FieldRule): Double {
         if (items.isEmpty()) return 0.0
-        return items.count { isUsableTitle(it, rule) }.toDouble() / items.size
+        var resolved = 0
+        var usable = 0
+        for (item in items) {
+            if (rule.select.isBlank() || item.pickByRule(rule) != null) resolved++
+            if (isUsableTitle(item, rule, item.pickByRule(link))) usable++
+        }
+        val n = items.size
+        return usable.toDouble() / n + resolved.toDouble() / n * 0.05
     }
 
     /** 取到的这段文本能不能当书名用：长度合理、有实义字符、不是「作者：xxx」这种整块信息 */
-    private fun isUsableTitle(item: Element, rule: FieldRule): Boolean {
+    private fun isUsableTitle(item: Element, rule: FieldRule, link: Element? = null): Boolean {
         // 和运行时用同一个取值函数：评分看到空、运行时却拿到文字（或者反过来），
         // 会让「同一套规则识别时通过、跑起来全叫未命名」
-        val text = PageParser.titleText(item, rule)
+        val text = PageParser.titleText(item, rule, link)
         if (text.length !in 2..90) return false
         if (text.count { it.isLetterOrDigit() } < 2) return false
+        if (TitleNormalizer.isGeneric(text)) return false
         return !TITLE_NOISE.containsMatchIn(text)
     }
 

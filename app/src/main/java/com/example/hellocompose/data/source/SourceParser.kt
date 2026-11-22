@@ -22,6 +22,9 @@ object SourceParser {
     /** 当前支持的结构版本。配置里写了更高的版本说明是给新版 App 用的 */
     const val SUPPORTED_SCHEMA = 1
 
+    /** 表单固定参数的上限：真实的搜索表单只有几个隐藏域，几十个说明抄错了节点 */
+    private const val MAX_FIELDS = 24
+
     private val CHAR_INDEX = Regex("at character (\\d+)")
 
     /**
@@ -226,12 +229,30 @@ object SourceParser {
             link = obj.optJSONObject("link").toFieldRule(FieldRule.LINK),
             cover = obj.optJSONObject("cover").toFieldRule(FieldRule(select = "", attr = "data-original|src")),
             title = obj.optJSONObject("title").toFieldRule(FieldRule(select = "", attr = "alt")),
-            script = script
+            script = script,
+            method = HttpMethod.parse(obj.optString("method", "get")),
+            keywordParam = obj.optString("keywordParam").trim()
+                .ifBlank { SearchRequestBuilder.DEFAULT_KEYWORD_PARAM },
+            fields = obj.optJSONObject("fields").toStringMap(id, node)
         ).also {
             require(it.item.isNotBlank() || script != null) {
                 "[$id] $node.item 不能为空（除非配置了 $node.script）"
             }
         }
+    }
+
+    private fun JSONObject?.toStringMap(id: String, node: String): Map<String, String> {
+        val obj = this ?: return emptyMap()
+        val result = LinkedHashMap<String, String>()
+        obj.keys().forEach { key ->
+            val value = obj.optString(key)
+            if (key.isBlank()) return@forEach
+            result[key] = value
+        }
+        require(result.size <= MAX_FIELDS) {
+            "[$id] $node.fields 有 ${result.size} 项，超过上限 $MAX_FIELDS，检查是不是把整个表单都抄进来了"
+        }
+        return result
     }
 
     /**

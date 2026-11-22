@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>搜索 {{keyword}} - WP漫画模板站</title>
+</head>
+<body class="wp-manga">
+<header class="site-header"><a href="/">WP漫画模板站</a></header>
+
+<main class="site-content">
+    <h1 class="h4">搜索结果：{{keyword}}</h1>
+    <div class="page-content-listing">
+        <div class="row c-tabs-item__content">
+            <div class="col-4"><div class="tab-thumb c-image-hover"><a href="/manga/{{keyword}}/" title="{{keyword}}"><img class="img-responsive" src="/wp-content/uploads/{{keyword}}.jpg" alt="{{keyword}}"></a></div></div>
+            <div class="col-8">
+                <div class="post-title"><h3 class="h4"><a href="/manga/{{keyword}}/">{{keyword}}</a></h3></div>
+                <div class="meta-item latest-chap"><a href="/manga/{{keyword}}/chapter-1/">第 1 话</a></div>
+            </div>
+        </div>
+        <div class="row c-tabs-item__content">
+            <div class="col-4"><div class="tab-thumb c-image-hover"><a href="/manga/{{keyword}}-2/" title="{{keyword}} 第二季"><img class="img-responsive" src="/wp-content/uploads/{{keyword}}-2.jpg" alt="{{keyword}} 第二季"></a></div></div>
+            <div class="col-8">
+                <div class="post-title"><h3 class="h4"><a href="/manga/{{keyword}}-2/">{{keyword}} 第二季</a></h3></div>
+                <div class="meta-item latest-chap"><a href="/manga/{{keyword}}-2/chapter-1/">第 1 话</a></div>
+            </div>
+        </div>
+        <div class="row c-tabs-item__content">
+            <div class="col-4"><div class="tab-thumb c-image-hover"><a href="/manga/{{keyword}}-3/" title="{{keyword}} 外传"><img class="img-responsive" src="/wp-content/uploads/{{keyword}}-3.jpg" alt="{{keyword}} 外传"></a></div></div>
+            <div class="col-8">
+                <div class="post-title"><h3 class="h4"><a href="/manga/{{keyword}}-3/">{{keyword}} 外传</a></h3></div>
+                <div class="meta-item latest-chap"><a href="/manga/{{keyword}}-3/chapter-1/">第 1 话</a></div>
+            </div>
+        </div>
+    </div>
+</main>
+</body>
+</html>

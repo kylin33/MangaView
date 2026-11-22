@@ -21,8 +21,11 @@ internal object ImageSignals {
      */
     const val CARRIER_SELECTOR =
         "img, picture, [data-original], [data-original-src], [data-src], [data-lazy-src], " +
-            "[data-lazyload], [data-echo], [data-actualsrc], [data-bg], [data-image], " +
-            "[data-srcset], [srcset], [style*=background-image]"
+            "[data-lazyload], [data-lazy], [data-aload], [data-echo], [data-actualsrc], " +
+            "[data-ks-lazyload], [data-ll-src], [data-lazy-img], [data-bg], [data-bg-src], " +
+            "[data-image], [data-image-src], [data-srcset], [srcset], " +
+            // background / background-image 两种写法都要覆盖：有的模板只写简写属性
+            "[style*=background]"
 
     fun values(el: Element): List<String> =
         ImageUrlResolver.candidates(el).filter { it.usable }.map { it.raw }
@@ -32,6 +35,20 @@ internal object ImageSignals {
     /** 条目自身或它内部第一个能取到图片地址的元素 */
     fun carrierIn(item: Element): Element? =
         ImageUrlResolver.carrierIn(item, CARRIER_SELECTOR)
+
+    /**
+     * 条目上「最可信的那张图」是从哪个属性来的。
+     *
+     * 不按元素判断，按**胜出的候选属性**判断：`<picture><source srcset>` 的
+     * 首个子元素是 `<source>` 而不是 `<img>`，按元素判断会把「srcset」误记成
+     * 「没有源」，进而把一个正常站点判成「封面没有稳定取值方式」。
+     */
+    fun bestAttrIn(item: Element): String? =
+        ImageUrlResolver.best(item)?.attr
+            ?: item.select(CARRIER_SELECTOR)
+                .mapNotNull { ImageUrlResolver.best(it) }
+                .maxByOrNull { it.score }
+                ?.attr
 
     /** 按属性可靠性排序的取值链，供配置里的 `attr` 使用 */
     fun attrOrder(carriers: List<Element>): String = ImageUrlResolver.attrChain(carriers)

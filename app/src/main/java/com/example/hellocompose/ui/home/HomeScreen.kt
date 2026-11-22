@@ -63,7 +63,8 @@ fun HomeScreen(
     onHistoryClick: () -> Unit,
     onContinueReading: (ReadingRecord) -> Unit,
     onAddSource: () -> Unit,
-    onEditSource: (SourceConfig) -> Unit
+    onEditSource: (SourceConfig) -> Unit,
+    onStatsClick: () -> Unit
 ) {
     val container = LocalAppContainer.current
     val context = LocalContext.current
@@ -135,6 +136,10 @@ fun HomeScreen(
                 onPreloadClick = {
                     scope.launch { drawerState.close() }
                     showSettings = true
+                },
+                onStatsClick = {
+                    scope.launch { drawerState.close() }
+                    onStatsClick()
                 }
             )
         }

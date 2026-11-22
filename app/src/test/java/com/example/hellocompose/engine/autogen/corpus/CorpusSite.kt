@@ -40,6 +40,8 @@ class CorpusSite private constructor(
     val home: HomeSpec,
     val detail: DetailSpec,
     val reader: ReaderSpec,
+    /** 声明了搜索样本的站点才参与搜索评分（没有搜索结果的静态站不算退步） */
+    val search: SearchSpec?,
     /** 反爬样本：期望识别失败并给出可读原因，不参与准确率统计 */
     val blocked: Boolean,
     val notes: String,
@@ -78,6 +80,13 @@ class CorpusSite private constructor(
 
     data class DetailPage(val page: String, val expectedChapterCount: Int)
 
+    data class SearchSpec(
+        /** 回放搜索时用的关键词：页面上 `{{keyword}}` 会被换成它 */
+        val keyword: String,
+        /** 用生成的 search 规则至少要能解析出这么多条 */
+        val minItems: Int
+    )
+
     data class ReaderSpec(
         val page: String,
         val imageSelector: String,
@@ -90,7 +99,14 @@ class CorpusSite private constructor(
 
     fun page(name: String): String = File(dir, name).readText()
 
-    fun document(page: String, requestUrl: String): Document = Jsoup.parse(page(page), requestUrl)
+    /**
+     * 解析成 Document，并把搜索页里的 `{{keyword}}` 换成当次请求的关键词。
+     *
+     * 搜索页必须随关键词变化，否则「换个词结果变不变」这条验证永远是「没变」——
+     * 静态页面模拟不出「关键字真的生效」，所有搜索都会被判成假的。
+     */
+    fun document(page: String, requestUrl: String): Document =
+        Jsoup.parse(page(page).replace("{{keyword}}", keywordOf(requestUrl)), requestUrl)
 
     /**
      * 首页的标准答案。
@@ -240,6 +256,12 @@ class CorpusSite private constructor(
                         }
                     }.orEmpty()
                 ),
+                search = json.optJSONObject("search")?.let {
+                    SearchSpec(
+                        keyword = it.optString("keyword", "测试"),
+                        minItems = it.optInt("minItems", 1)
+                    )
+                },
                 reader = ReaderSpec(
                     page = reader.optString("page", "reader.html"),
                     imageSelector = reader.optString("imageSelector", ""),
@@ -250,6 +272,24 @@ class CorpusSite private constructor(
                 notes = json.optString("notes", ""),
                 dir = dir
             )
+        }
+
+        /**
+         * 从请求地址里取出关键词。参数名在不同站点不同（keyword / wd / s / key …），
+         * 语料样本靠它得到 `{{keyword}}` 的真实取值。
+         */
+        private val KEYWORD_PARAMS =
+            listOf("keyword", "wd", "kw", "q", "s", "k", "searchword", "searchkey", "key")
+
+        private fun keywordOf(url: String): String {
+            val query = url.substringAfter('?', "")
+            if (query.isEmpty()) return ""
+            val params = query.split('&')
+                .filter { it.contains('=') }
+                .associate { it.substringBefore('=') to it.substringAfter('=') }
+            val raw = KEYWORD_PARAMS.firstNotNullOfOrNull { params[it]?.takeIf { v -> v.isNotBlank() } }
+                ?: return ""
+            return runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
         }
 
         /** 空白归一：全角空格、换行、连续空格都压成一个空格 */

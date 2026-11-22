@@ -16,7 +16,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -85,7 +87,9 @@ fun ReaderScreen(
     coverUrl: String,
     onBack: () -> Unit,
     /** 换源：切到目标站点；chapter 不为空时直接落到对应章节 */
-    onSwitchSource: (SourceConfig, Manga, Chapter?) -> Unit
+    onSwitchSource: (SourceConfig, Manga, Chapter?) -> Unit,
+    /** 看完之后去查图片加载性能，不在阅读页实时显示 */
+    onOpenStats: () -> Unit
 ) {
     val container = LocalAppContainer.current
     /** 图片请求层：请求构造、预加载、缓存释放都走它，UI 只负责显示 */
@@ -115,6 +119,14 @@ fun ReaderScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSwitch by remember { mutableStateOf(false) }
+
+    /**
+     * 当前失败的页（地址 → 原因）。单张重试在页内，这里汇总是为了给「整章重试」用：
+     * 一张一张点太慢，尤其是图床整体挂了的时候。
+     */
+    var failedPages by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var retryEpoch by remember { mutableIntStateOf(0) }
+
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -189,6 +201,35 @@ fun ReaderScreen(
                                 scope.launch { listState.animateScrollToItem(0) }
                             }
                         )
+                        // 图床整体抽风时，一张张点重试太慢；这里一次性重来
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (failedPages.isEmpty()) {
+                                        "重试加载失败的图"
+                                    } else {
+                                        "重试失败的 ${failedPages.size} 张图"
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Default.Refresh, contentDescription = null)
+                            },
+                            enabled = failedPages.isNotEmpty(),
+                            onClick = {
+                                showMenu = false
+                                failedPages = emptyMap()
+                                retryEpoch += 1
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("图片加载统计") },
+                            leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                onOpenStats()
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("预加载设置") },
                             leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -200,7 +241,7 @@ fun ReaderScreen(
                         // 站点卡、图加载不出来时的出口：换个站点看同一本书
                         DropdownMenuItem(
                             text = { Text("换源") },
-                            leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
                             onClick = {
                                 showMenu = false
                                 showSwitch = true
@@ -256,7 +297,17 @@ fun ReaderScreen(
                             page = page,
                             index = index,
                             total = state.pages.size,
-                            images = images
+                            images = images,
+                            retryEpoch = retryEpoch,
+                            onFailure = { url, reason ->
+                                if (reason == null) {
+                                    if (failedPages.containsKey(url)) {
+                                        failedPages = failedPages - url
+                                    }
+                                } else if (failedPages[url] != reason) {
+                                    failedPages = failedPages + (url to reason)
+                                }
+                            }
                         )
                     }
 
@@ -318,11 +369,22 @@ private fun PageImage(
     page: Page,
     index: Int,
     total: Int,
-    images: ImageRequestManager
+    images: ImageRequestManager,
+    /** 整章重试的信号：变化时，失败的页自己再试一次 */
+    retryEpoch: Int,
+    onFailure: (url: String, reason: String?) -> Unit
 ) {
     var attempt by remember(page.url) { mutableIntStateOf(0) }
     var aspect by remember(page.url) { mutableFloatStateOf(images.sizes.aspectOf(page.url) ?: 0f) }
     var error by remember(page.url) { mutableStateOf<String?>(null) }
+
+    // 只重试真的失败的页：整章重来会把几十张已经好好的图重新解一遍
+    LaunchedEffect(retryEpoch) {
+        if (retryEpoch > 0 && error != null) {
+            error = null
+            attempt += 1
+        }
+    }
 
     // 重试时换一个请求实例，AsyncImage 才会真的重新发起加载
     val request = remember(page.url, attempt) { images.pageRequest(page) }
@@ -349,6 +411,7 @@ private fun PageImage(
                 when (state) {
                     is AsyncImagePainter.State.Success -> {
                         error = null
+                        onFailure(page.url, null)
                         val drawable = state.result.drawable
                         if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
                             images.sizes.put(
@@ -362,10 +425,12 @@ private fun PageImage(
 
                     is AsyncImagePainter.State.Error -> {
                         val throwable = state.result.throwable
-                        error = ImageErrorText.of(
+                        val message = ImageErrorText.of(
                             throwable,
                             (throwable as? HttpException)?.response?.code
                         )
+                        error = message
+                        onFailure(page.url, message)
                     }
 
                     else -> Unit

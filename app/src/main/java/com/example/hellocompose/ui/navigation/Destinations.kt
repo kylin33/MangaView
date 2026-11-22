@@ -21,6 +21,9 @@ object Destinations {
     /** 阅读历史 / 进度 */
     const val HISTORY = "history"
 
+    /** 图片加载性能面板：看完之后进来查，不在阅读页实时刷 */
+    const val STATS = "stats"
+
     const val DETAIL_ROUTE = "detail?url={url}&title={title}&cover={cover}"
 
     /**

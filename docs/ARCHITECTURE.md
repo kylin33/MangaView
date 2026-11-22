@@ -123,6 +123,46 @@ URL → 首页 HTML → 推断列表选择器 → 进详情页 → 推断章节�
 全等比较会把它算成另一种结构。一个过宽的选择器（`div.grid > div` 同时框进作品卡和横幅）
 条数很好看，但一致性只有 0.5，会被结构惩罚压下去。
 
+### 能力探测（Capability-Based Detection）
+
+识别不再假设「站点长成标准模样」。每一阶段先回答「这一项在页面上靠什么承载」，
+再按答案选通道，并把结论写进识别报告：
+
+| 阶段 | 可探测到的通道 |
+| --- | --- |
+| 列表 | 块级重复容器 / 整页平铺封面图 / 内联脚本 JSON |
+| 封面 | `img[src]` / 懒加载属性 / CSS 背景图 |
+| 标题 | 链接 `title` 属性 / 语义节点 / 可见文字 |
+| 章节 | DOM 列表 / 内联脚本 JSON |
+| 正文图 | `img` 属性 / CSS 背景图 |
+
+探测只统计**条目集合上的事实**（多少条带 `data-original`、多少条靠背景图），
+不做全页统计 —— 全页会被页脚、侧栏、广告稀释，一个「30 条里 28 条懒加载」的列表
+可能被算成 40%，于是错误地退回 `src`。
+
+探测结果有两条实际用途：一是给规则挑选一个 0.05 的同分偏向（探测说封面在背景图上，
+`style` 候选优先）；二是生成 `weakPoints`，例如「封面写在 CSS 背景图里」「书名只能
+从可见文字里取」——这些话直接出现在识别报告里，用户不用猜为什么书名带了更新时间。
+
+能力探测不通过时（`Channel.NONE`）不算失败，只说明这一阶段没有稳定承载方式，
+后面靠兜底和置信度如实反映。
+
+### 标题归一化
+
+书名和章节名很少是干净的字符串，`TitleNormalizer` 统一处理三类脏数据：
+
+| 现象 | 处理 |
+| --- | --- |
+| `14小时前 姨见钟情`（时间/状态徽章） | 剥徽章；但 `14岁的夏天`、`3月的狮子` 这类数字开头的书名不动 |
+| `雪山飞狐外传 作者：金先生 更新：第30回` | 从第一个元信息字段处截断 |
+| `第1话-阿姨，我` + `title="第1话-阿姨，我们结婚吧"` | 可见文字是 `title` 的前缀时，用更完整的那个 |
+
+反向也要防：`title="书名-第1话"` 且可见文字是「第1话」时，**不能**采信 `title`，
+否则章节列表每一行都会重复一遍书名。判据是多出来的部分是否以「第N话」开头。
+
+识别阶段的 `isUsableTitle` 和运行时的 `PageParser` 用同一个函数，避免「识别时判为
+合格、跑起来是脏标题」。
+
 ### 语义特征
 
 `Semantics` 用来补上「class 名读不懂」这一大片站点。真实站点里 `item-123`、`list_456`、
@@ -150,16 +190,19 @@ URL → 首页 HTML → 推断列表选择器 → 进详情页 → 推断章节�
 | --- | --- |
 | `data-original` | 100 |
 | `data-src` | 95 |
-| `data-lazy-src` / `data-lazyload` | 90 / 89 |
+| `data-lazy-src` / `data-lazyload` | 92 / 91 |
+| `data-lazyload-src` / `data-lazy` / `data-aload` | 90 / 89 / 89 |
 | `data-echo` / `data-actualsrc` | 88 / 87 |
+| `data-ks-lazyload` / `data-ll-src` / `data-lazy-img` | 86 / 86 / 85 |
 | `srcset` / `data-srcset` | 85 / 84 |
 | `data-url` / `data-bg` / `data-image` | 83 / 82 / 81 |
-| `src` | 80 |
+| `data-poster` / `src` | 80 / 80 |
 | `style` 里的 `background-image:url(...)` | 75 |
 
 打分还会修正：落在 `/upload/`、`/content/`、`/pic/` 这类目录加 10，文件名带连续数字加 6，
 是 `logo` / `avatar` / `banner` / `.svg` 扣 30，占位图（`data:`、`blank.gif`、`spacer`、
-`lazyload`、1×1）直接判 0 分。`srcset` 取最大的一档而不是第一个 —— 真实站点常把
+`lazyload`、`px.gif`、`1.gif`、`default.jpg`、1×1）直接判 0 分；元素上声明了 `width`/`height`
+且都不超过 48 时，`src` 候选再降 25 分（同元素上有别的候选才降，避免误杀真的小图）。`srcset` 取最大的一档而不是第一个 —— 真实站点常把
 「小图预览 + 原图」两档写在一起。
 
 属性链（`attrChain`）只保留过半条目可用的属性并按可靠性排序，**不按覆盖率**：
@@ -208,7 +251,10 @@ URL → 首页 HTML → 推断列表选择器 → 进详情页 → 推断章节�
 | 章节写在 `<script>` 的 JSON 里 | 从内联脚本取数组（括号配平防嵌套截断），但必须实开第一章抓到图才采信 |
 | 章节跳转交给 JS（`href="javascript:void(0)"`） | 除 `href` 外还试 `data-href` / `data-url` / `data-link`，并排除 data-* 里的封面图 |
 | 章节被拆成多个 tab（连载 / 番外、按卷分块） | 把结构相同且都像章节的块用分组选择器合并，避免目录只抓到一半 |
-| 搜索地址不固定 | 依次试 query 与路径式共 11 种常见形态，命中即停 |
+| 搜索框在页面上，但地址不是 `?keyword=` | 先读 `<form>`：`action` 是请求路径、`method` 决定 GET/POST、`<input name>` 是参数名，隐藏域一并带上 |
+| 搜索只能用 POST（关键字不能出现在地址栏） | 配置里用 `method: post` + `keywordParam`，关键字进请求体；识别时也真的发 POST 去验 |
+| 页面没有 `<form>`，提交逻辑在 JS 里 | 从页面里出现过的 `<input name>` 推参数名，再拿生僻词探一次：页面回显该词即说明参数生效 |
+| 搜索地址不固定 | 依次试 query 与路径式共 12 种常见形态，命中即停；整轮请求有上限，避免把站点打到限流 |
 | class / id 完全不可读（`item-123`、`box-a1`） | 靠 `alt`、链接文字与 URL 路径判断字段；广告位靠 `/promo/` 这类路径扣分 |
 | `src` 是 1×1 占位图 / base64 | 按属性优先级与地址形态打分，取 `data-original`、`data-src`、`srcset` 里最可信的那个 |
 | 只有 `srcset`、没有 `src` | 取密度/宽度最大的一档；`<picture><source>` 也算候选 |
@@ -249,7 +295,7 @@ AsyncImage                 只负责显示与失败提示
 | 按屏幕尺寸采样 | 请求尺寸给屏宽，原图 2000 宽只解到 1000 宽；**只缩不放** |
 | 对齐 2 的幂采样 | 解码宽度往 `原图/2ⁿ` 上靠（不低于屏宽 85%），让 `BitmapFactory` 一次采样到位：2000 宽的图从「先解 38MB 中间位图再缩」变成直接解 10MB |
 | 超长图低内存渲染 | 解码前 `peek` 出原始尺寸，按面积预算（单页 ≤ 600 万像素）继续缩；超出纹理上限（4096）的强制软件位图 |
-| 限制同时解码 | `bitmapFactoryMaxParallelism(2)` + 解码调度器并行度 2，两道闸门 |
+| 限制同时解码 | `bitmapFactoryMaxParallelism(n)` + 解码调度器并行度 n，两道闸门；n 由设备堆上限给出（1–3） |
 | 有界 LRU | 内存缓存按堆 **18%** 封顶，磁盘 256MB；key 带屏宽，换尺寸不会混用 |
 | 请求去重 | 同一地址正在飞就不再入队（引擎按页索引去重，请求层按地址去重） |
 | 失败重试 | 只有超时/断流/5xx/429 重试，最多 3 次退避；证书错误和 403 **绝不重试** |
@@ -257,6 +303,10 @@ AsyncImage                 只负责显示与失败提示
 | 切章释放 | 新章加载完成后 `retainOnly(urls)`：取消旧章在飞的请求 + 从内存缓存摘掉旧章位图 |
 | 内存压力 | `Application.onTrimMemory` 转发给 Coil，并停掉投机性的预加载；`onLowMemory` 清空缓存 |
 | 滚动不跳 | 记住每页宽高比（`PageSizeCache`），图片到达前先把高度占好 |
+| 可见页优先 | 预加载走闸门（`PreloadGate`）：可见页在加载时不放行，预加载席位固定 1 个，重试共用同一席位 |
+| 设备自适应并发 | 按 `ActivityManager.memoryClass` 给 1–3 路，低内存设备一票否决（`ImageConcurrency`） |
+| 失败恢复 | 单页可重试；菜单里能一次重试本章所有失败页，只重试真的失败的那些 |
+| 缓存清理 | 面板显示磁盘占用并可整体清空；日常淘汰交给 Coil 按大小做的 LRU |
 
 **没有自己写解码器**：`PageBoundsDecoder` 只做「探尺寸 → 改 `Options` → 交回 Coil 的
 `BitmapFactoryDecoder`」，采样、EXIF、色彩空间、硬件位图仍然由 Coil 处理。任何一步
@@ -271,6 +321,37 @@ AsyncImage                 只负责显示与失败提示
   单张的瞬时峰值无法消除——能控制的是**同时解几张**和**缓存里留几张**；
 - 没有做真正的分块（按区域解码整卷长图）：那需要自定义 `Fetcher` + 分片缓存，
   在「不做完整解码系统」的前提下收益不划算，先用像素预算把最坏情况挡住。
+- **解码并发在构造 `ImageLoader` 时定死**，运行中改不了。所以只能按设备给一个合适的初始值，
+  不存在「边跑边调」——面板上显示的并发上限就是开局那个数。
+
+### 优先级是怎么做的
+
+Coil 2 的 `ImageRequest` 没有优先级字段（那是 Coil 3 才有的），所以优先级放在请求层自己做：
+`PreloadGate` 记录「当前有几个可见页在加载」，预加载启动前必须等到 0，且同时只允许 1 个预加载。
+
+正在飞的图不会被抢占 —— 断掉一个下了 80% 的请求，重下比等它完成更贵。能控制的是
+**谁先开始**，这已经足够：滚动时新进入屏幕的页永远排在预加载前面。
+
+### 监控与调参
+
+埋点放在 `pageRequest` 的 listener 上，这是唯一同时经过可见请求和预加载的地方：
+
+| 指标 | 来源 | 怎么用 |
+| --- | --- | --- |
+| 耗时 | `onStart` → 终止回调，`SystemClock.elapsedRealtime` | 长图 p90 高是正常的；p50 高要先看命中率 |
+| 命中来源 | `SuccessResult.dataSource`（内存 / 磁盘 / 网络） | 命中率低但速度还行 = 图床快；命中率高还慢 = 解码或主线程 |
+| 失败原因 | `ImageErrorText` 的分类 + HTTP 码 | 集中 403 是防盗链，该换源；集中超时是站或网络 |
+| 并发 | 请求层计数器（开始 +1，终止 -1） | 峰值长期打满说明预加载确实在跟可见页抢 |
+
+几个刻意的口径：
+
+- **取消不算失败**。滚动时列表回收、`retainOnly` 切章都会取消请求，把它们算进分母，
+  成功率会随滑动变低，看起来像网络坏了。
+- **分位数只看最近 400 条**。早期数据对「现在快不快」没有参考价值；
+  平均值仍取全会话。
+
+统计活在内存里（`ImageLoadStats`），重启清零。它是排查工具，不是上报系统 ——
+真要长期观察，应该导出而不是偷偷上传。
 
 ## 连接安全
 
@@ -346,7 +427,10 @@ com.example.hellocompose
 │   ├── settings/                   SettingsRepository（DataStore）
 │   └── image/                      图片请求层
 │       ├── MangaImageLoader        全局 Coil 配置：LRU 上限、解码闸门、磁盘缓存
-│       ├── ImageRequestManager     请求去重 / 重试 / 章节释放 / 缓存 key
+│       ├── ImageRequestManager     请求构造 / 可见优先 / 重试 / 章节释放 / 埋点
+│       ├── ImageLoadStats          加载事件环形缓冲：成功率、分位、命中率、失败归因
+│       ├── ImageConcurrency        按设备堆上限给出解码并发
+│       ├── PreloadGate             可见页优先的预加载闸门（纯状态机）
 │       ├── PageBoundsDecoder       探原始尺寸 → 像素预算 → 交给 Coil 解码
 │       ├── PageSampling            采样与预算的纯函数（单测覆盖）
 │       ├── RetryPolicy             哪些错误值得重试（纯函数）
@@ -356,6 +440,7 @@ com.example.hellocompose
 │       └── CoilPagePreloader       阅读引擎的预加载/释放适配器
 └── ui/
     ├── home/ detail/ reader/ search/ history/ source/
+    ├── stats/                      ImageStatsScreen：图片加载性能面板
     ├── components/                 SourceDrawer、SourceSwitchSheet、ContinueReadingCard…
     └── navigation/ theme/
 ```

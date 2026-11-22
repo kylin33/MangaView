@@ -14,7 +14,7 @@
 ```bash
 ./gradlew :app:assembleDebug       # 产物 app/build/outputs/apk/debug/app-debug.apk（约 15MB）
 ./gradlew :app:assembleRelease     # 未签名的 release 包（当前未接 signingConfig，也没开 minify）
-./gradlew :app:testDebugUnitTest   # 142 个单元测试，默认不联网
+./gradlew :app:testDebugUnitTest   # 187 个单元测试，默认不联网
 ```
 
 ## 工具链的坑
@@ -34,7 +34,7 @@
 
 | 层 | 回答的问题 | 数量 | 联网 |
 | --- | --- | --- | --- |
-| 单元测试 | 纯函数与引擎逻辑对不对 | 142 | 否 |
+| 单元测试 | 纯函数与引擎逻辑对不对 | 187 | 否 |
 | 实连测试 | 识别结果拿去做正式抓取真能用吗 | 1（按需） | 是 |
 | 回归夹具 `fixtures/` | 这类结构还认得出来吗 | 14 组 | 否 |
 | 准确率语料 `corpus/` | 有多准，哪一关退化 | 9 组 | 否 |
@@ -49,6 +49,16 @@
 ```
 
 改完识别算法，最好拿一个真实站点跑一遍 —— 这是唯一能碰到「真实站点的脏 HTML」的地方。
+
+批量体检用 `AutoGeneratorProbeTest`，一次跑一批站点、只打印不结案：
+
+```bash
+./gradlew testDebugUnitTest --tests "*AutoGeneratorProbeTest*" \
+  -DliveSite="a.com,b.com,https://c.com/"
+```
+
+每站输出识别出的规则、能力通道、首页条数与空封面/可疑标题计数、章节数、正文图数量。
+它的价值是把「这次改动到底有没有变好」变成一串可比对的数字，而不是靠印象。
 
 ### 回归夹具
 
@@ -145,7 +155,7 @@ app/src/test/resources/fixtures/site-xxx/
 的笨办法展开，故意不猜字段、不猜地址模板，避免和被测实现犯同一个错。
 
 判定按**效果**而不是选择器字符串：`.list .item` 和 `div.list > div.item` 选中的是同一批
-节点，抓到的东西一样就算对。六个阶段各自判定，并给出条目级准确率：
+节点，抓到的东西一样就算对。七个阶段各自判定，并给出条目级准确率：
 
 | 阶段 | 通过条件 |
 | --- | --- |
@@ -154,7 +164,14 @@ app/src/test/resources/fixtures/site-xxx/
 | 封面提取 | 逐条完全一致的比例 ≥ 0.95 |
 | 章节提取 | 两个详情页的章节 URL 集合 Jaccard 都 ≥ 0.90 |
 | 图片地址 | 数量与**顺序**完全一致（顺序错了读起来就是乱的） |
-| 完整配置 | 以上五项全过 |
+| 站内搜索 | 用**生成的 search 规则**真的发一次请求，解析出的条数达到样本声明的下限 |
+| 完整配置 | 以上五项全过（搜索单列，不并进来） |
+
+搜索单独一列、也不并进「完整配置」：它的失败原因和前面几关完全不同（没推出搜索规则
+vs 首页/目录/图片抓错了），混在一起就分不清该改哪里。搜索页样本在 `expected.json` 里
+用 `"search": { "minItems": 3 }` 声明；没声明的站点不计入分母（SPA 的搜索结果由前端渲染，
+本来就不该要求）。页面里的 `{{keyword}}` 会被替换成当次请求的关键词 ——
+静态页面模拟不出「换个词结果变不变」，不替换的话所有搜索都会被判成假的。
 
 ```bash
 # 控制台会打出逐站矩阵；详细报告在 app/build/reports/autogen-corpus/

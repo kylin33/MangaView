@@ -43,8 +43,7 @@ App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错�
   "path": "/search?keyword={keyword}",      // {keyword} 会被 URL 编码后替换
   "item": "div.comic-item", "link": { ... }, "cover": { ... }, "title": { ... }
 },
-"detail": {          // 详情页 -> 章节列表
-  "item": "ul#chapter-list li a",
+"detail": {          // 详情页 -> 章节列表  "item": "ul#chapter-list li a",
   "chapterUrl":   { "select": "", "attr": "href" },
   "chapterTitle": { "select": "", "attr": "text" }
 },
@@ -54,6 +53,34 @@ App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错�
   "referer": "{pageUrl}"                    // 图片防盗链的 Referer，默认本章地址
 }
 ```
+
+搜索表单不是「GET + `?keyword=`」的站点，`search` 还能多写三项。默认值就是最常见的那种形态，
+所以一般配置里不会出现它们：
+
+```jsonc
+"search": {
+  // 表单是 <form action="/search.php" method="post"><input name="searchword">
+  // 关键字只能放请求体，所以 path 里没有 {keyword}，由 keywordParam 指名参数
+  "path": "/search.php",
+  "method": "post",              // 默认 get
+  "keywordParam": "searchword",  // 默认 keyword；path 里有 {keyword} 时用不到
+
+  // 表单带隐藏域时（苹果CMS 一类模板少一个参数就被重定向回首页）：
+  //   <form action="/index.php" method="get">
+  //     <input type="hidden" name="m" value="search">
+  //     <input type="hidden" name="a" value="init">
+  //     <input type="text" name="wd">
+  // GET 可以直接把这些参数写进 path（"/index.php?m=search&a=init&wd={keyword}"），
+  // POST 必须用 fields 表达，它们会进请求体：
+  "fields": { "m": "search", "a": "init" },
+
+  "item": "div.comic-item", "link": { ... }, "cover": { ... }, "title": { ... }
+}
+```
+
+自动识别会优先读页面上的搜索表单（`<form>` 的 `action` / `method`、输入框的 `name`），
+连 POST 和隐藏域一起写成上面的形态；页面上找不到表单时，才退到「试常见搜索地址」
+和「用生僻词探测哪个参数真的生效」。识别报告里的「搜索：可用」后面会注明是哪一种。
 
 章节不在 DOM 里（写在 `<script>` 里）的站点，可以在 `detail` 里用 `script` 节点取数：
 

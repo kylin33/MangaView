@@ -43,6 +43,8 @@ object CorpusReport {
         val totals = Stage.entries.map { stage ->
             scored.fold(StageTotals(stage)) { acc, run ->
                 val result = run.stages.getValue(stage)
+                // 不适用的样本不进分母：否则「3 个样本声明了搜索、全过」会显示成 3/8
+                if (!result.applicable) return@fold acc
                 acc.copy(
                     passed = acc.passed + if (result.passed) 1 else 0,
                     total = acc.total + 1,

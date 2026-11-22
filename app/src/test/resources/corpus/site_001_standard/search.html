@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>搜索 {{keyword}} - 漫画甲站</title>
+</head>
+<body>
+<header class="site-header">
+    <a class="logo" href="/"><img src="/static/logo.png" alt="漫画甲站"></a>
+    <form class="search" action="/search"><input name="keyword" value="{{keyword}}"><button>搜索</button></form>
+</header>
+
+<main>
+    <h2 class="section-title">搜索「{{keyword}}」的结果</h2>
+    <div class="comic-list">
+        <div class="comic-item">
+            <a class="cover" href="/detail/{{keyword}}"><img data-src="/upload/cover/{{keyword}}.jpg" alt="{{keyword}}"></a>
+            <h3 class="comic-title"><a href="/detail/{{keyword}}">{{keyword}}</a></h3>
+            <p class="update">第 12 话</p>
+        </div>
+        <div class="comic-item">
+            <a class="cover" href="/detail/{{keyword}}-2"><img data-src="/upload/cover/{{keyword}}-2.jpg" alt="{{keyword}} 第二季"></a>
+            <h3 class="comic-title"><a href="/detail/{{keyword}}-2">{{keyword}} 第二季</a></h3>
+            <p class="update">第 3 话</p>
+        </div>
+        <div class="comic-item">
+            <a class="cover" href="/detail/{{keyword}}-3"><img data-src="/upload/cover/{{keyword}}-3.jpg" alt="{{keyword}} 外传"></a>
+            <h3 class="comic-title"><a href="/detail/{{keyword}}-3">{{keyword}} 外传</a></h3>
+            <p class="update">第 1 话</p>
+        </div>
+    </div>
+</main>
+</body>
+</html>

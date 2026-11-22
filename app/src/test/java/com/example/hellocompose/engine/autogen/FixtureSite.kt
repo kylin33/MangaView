@@ -66,7 +66,13 @@ class FixtureSite private constructor(
         val failureContains: String? = null,
         /** site.json 里是否写了 searchPath（写 null 表示「必须没有搜索」） */
         val expectsSearchPath: Boolean = false,
-        val searchPath: String? = null
+        val searchPath: String? = null,
+        /** 搜索请求方式：get / post。不写表示不校验 */
+        val searchMethod: String? = null,
+        /** 关键字参数名。不写表示不校验 */
+        val searchKeywordParam: String? = null,
+        /** 表单固定参数（隐藏域）。不写表示不校验 */
+        val searchFields: Map<String, String> = emptyMap()
     )
 
     /** 按页面名读 HTML；搜索页会把占位符换成关键词 */
@@ -131,7 +137,18 @@ class FixtureSite private constructor(
             warningContains = json.stringOrNull("warningContains"),
             failureContains = json.stringOrNull("failureContains"),
             expectsSearchPath = json.has("searchPath"),
-            searchPath = json.stringOrNull("searchPath")
+            searchPath = json.stringOrNull("searchPath"),
+            searchMethod = json.stringOrNull("searchMethod"),
+            searchKeywordParam = json.stringOrNull("searchKeywordParam"),
+            searchFields = json.optJSONObject("searchFields")?.let { obj ->
+                val keys = obj.keys()
+                val map = LinkedHashMap<String, String>()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    map[key] = obj.optString(key)
+                }
+                map
+            }.orEmpty()
         )
 
         private fun resourceDir(name: String): File? =
@@ -156,13 +173,24 @@ class FixtureSite private constructor(
             return (0 until array.length()).map { array.getString(it) }
         }
 
-        /** 从请求地址里取出 keyword 参数（仅支持查询串形式，夹具只登记这种） */
+        /**
+         * 从请求地址里取出关键词。
+         *
+         * 以前只认 `keyword=`。真实站点的参数名五花八门（`wd`、`searchword`、`k`…），
+         * 而搜索页夹具靠 `{{keyword}}` 回显关键词 —— 只认一个参数名，
+         * 「表单推断出 wd」这类用例就永远看不到回显，只能被判成假搜索。
+         */
+        private val KEYWORD_PARAMS = listOf(
+            "keyword", "wd", "kw", "q", "s", "k", "searchword", "searchkey", "key", "word"
+        )
+
         private fun keywordOf(url: String): String {
             val query = url.substringAfter('?', "")
             if (query.isEmpty()) return ""
-            val raw = query.split('&')
-                .firstOrNull { it.startsWith("keyword=") }
-                ?.removePrefix("keyword=")
+            val params = query.split('&')
+                .filter { it.contains('=') }
+                .associate { it.substringBefore('=') to it.substringAfter('=') }
+            val raw = KEYWORD_PARAMS.firstNotNullOfOrNull { params[it]?.takeIf { v -> v.isNotBlank() } }
                 ?: return ""
             return runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
         }

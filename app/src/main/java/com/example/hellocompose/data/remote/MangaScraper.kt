@@ -2,11 +2,12 @@ package com.example.hellocompose.data.remote
 
 import com.example.hellocompose.data.model.Chapter
 import com.example.hellocompose.data.model.Manga
+import com.example.hellocompose.data.source.HttpMethod
+import com.example.hellocompose.data.source.SearchRequestBuilder
 import com.example.hellocompose.data.source.SourceConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.nodes.Document
-import java.net.URLEncoder
 
 /**
  * 页面抓取器：发请求 + 交给 [PageParser] 解析。
@@ -28,9 +29,13 @@ class MangaScraper(
         withContext(Dispatchers.IO) {
             val rule = source.search
                 ?: throw IllegalStateException("站点「${source.name}」未配置 search 规则")
-            val encoded = URLEncoder.encode(keyword, "UTF-8")
-            val pageUrl = source.url(rule.path.replace("{keyword}", encoded))
-            val doc = http.get(source, pageUrl)
+            // 与识别阶段共用同一个构造器：两边各拼一次地址，迟早会出现
+            // 「识别说可用、实际搜不出东西」这种只看代码发现不了的偏差
+            val request = SearchRequestBuilder.build(rule, keyword, source.baseUrl)
+            val doc = when (request.method) {
+                HttpMethod.POST -> http.post(source, request.url, request.body)
+                HttpMethod.GET -> http.get(source, request.url)
+            }
             PageParser.list(doc, rule, source.baseUrl)
         }
 

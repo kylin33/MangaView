@@ -35,20 +35,35 @@ internal object ImageUrlResolver {
      * `data-original` 排在最前不是拍脑袋：用这套懒加载命名的站点（苹果CMS 系模板尤其多）
      * 里，`src` 基本固定是 `loading.gif`，真实地址只在 data-* 上。
      * `srcset` 排在 `src` 之前是因为它至少说明了真实图片存在，而 `src` 可能只是占位。
+     *
+     * 这张表按「属性名在真实站点里出现过几次」长期补充，新增的都往对应档位塞，
+     * 不要随意调换已有顺序 —— 顺序决定 [attrChain] 写进配置的属性链，
+     * 一改就会让已保存的站点配置行为发生变化。
      */
     private val ATTR_PRIORITY = listOf(
         "data-original" to 100,
-        "data-original-src" to 98,
+        "data-original-src" to 99,
         "data-src" to 95,
-        "data-lazy-src" to 90,
-        "data-lazyload" to 89,
+        "data-lazy-src" to 92,
+        "data-lazyload" to 91,
+        "data-lazyload-src" to 90,
+        // 腾讯系/新浪系模板的写法，和 data-lazyload 同档
+        "data-lazy" to 89,
+        "data-aload" to 89,
         "data-echo" to 88,
         "data-actualsrc" to 87,
+        // 国内站点常见的两种冷门懒加载命名
+        "data-ks-lazyload" to 86,
+        "data-ll-src" to 86,
+        "data-lazy-img" to 85,
         "srcset" to 85,
         "data-srcset" to 84,
         "data-url" to 83,
         "data-bg" to 82,
+        "data-bg-src" to 82,
         "data-image" to 81,
+        "data-image-src" to 81,
+        "data-poster" to 80,
         "src" to 80,
         // 背景图写在 style 里，取值拿到的是整段 CSS，运行时由 [clean] 抽出 url()
         "style" to 75
@@ -67,10 +82,19 @@ internal object ImageUrlResolver {
 
     private val IMAGE_EXT = Regex("""\.(jpe?g|png|webp|avif|gif|bmp)(\?|#|$)""", RegexOption.IGNORE_CASE)
 
-    /** 占位图：真实地址在别的属性上，这个值本身不能用 */
+    /**
+     * 占位图：真实地址在别的属性上，这个值本身不能用。
+     *
+     * 懒加载站点的 `src` 几乎都是这一类：`data:image/gif;base64,...`、
+     * `loading.gif`、`blank.png`、`spacer.gif`、`1x1.png`，或者干脆是同目录下
+     * 一张叫 `default.jpg` 的灰图。它们都能正常解码，所以**不能靠能不能下载来判断**，
+     * 只能在地址形态上认出来。
+     */
     private val PLACEHOLDER = Regex(
-        "(data:image|base64,|about:blank|blank\\.|spacer\\.|placeholder|loading\\.|load\\.gif|lazyload" +
-            "|transparent\\.|pixel\\.|1x1|grey\\.gif|gray\\.gif|nopic|no-image|no_image|none\\.gif|default\\.gif)",
+        "(data:image|base64,|about:blank|blank\\.|spacer\\.|placeholder|loading\\.|load\\.gif" +
+            "|lazyload|lazy\\.(gif|png)|transparent\\.|pixel\\.|\\b1x1\\b|1px\\.|px\\.gif" +
+            "|(^|/)1\\.(gif|png)|grey\\.gif|gray\\.gif|nopic|no-image|no_image|noimg" +
+            "|none\\.gif|default\\.(gif|png|jpg|jpeg)|tmp\\.gif|spinner|preloader|hold\\.gif)",
         RegexOption.IGNORE_CASE
     )
 
@@ -113,8 +137,13 @@ internal object ImageUrlResolver {
         val base = ATTR_PRIORITY.firstOrNull { it.first == attr }?.second ?: 70
         if (value.isEmpty()) return Candidate(value, attr, 0)
 
-        // srcset 里可能塞了好几档，先按最大的一档拆出一个地址再打分
-        val single = if (attr.endsWith("srcset")) fromSrcset(value) ?: value else value
+        // srcset 里可能塞了好几档，style 里是整段 CSS：都先拆出一个真实地址再打分，
+        // 否则 best() 交给上层的是「一 CSS 语句」，还得每个调用方各自再清一遍
+        val single = when {
+            attr.endsWith("srcset") -> fromSrcset(value) ?: value
+            attr == "style" -> fromStyle(value) ?: value
+            else -> value
+        }
         if (isPlaceholder(single)) return Candidate(single, attr, 0, placeholder = true)
 
         var score = base
@@ -204,7 +233,21 @@ internal object ImageUrlResolver {
                 }
             }
         }
+
+        // 声明尺寸极小的 `src` 基本是占位（1×1 埋点、48×48 的 loading 图标），
+        // 但只有在同元素上还有别的候选时才降权：正文图本身可能真的只有 40 宽，
+        // 无差别降权会把它误杀
+        if (out.any { it.usable && it.attr != "src" } && declaredSizeIsTiny(el)) {
+            out.replaceAll { c -> if (c.attr == "src") c.copy(score = c.score - 25) else c }
+        }
         return out.filter { it.raw.isNotBlank() }.sortedByDescending { it.score }
+    }
+
+    /** 元素上声明的宽高都很小（≤48），且形状接近正方形 —— 更可能是图标而不是封面 */
+    private fun declaredSizeIsTiny(el: Element): Boolean {
+        val w = el.attr("width").toIntOrNull() ?: return false
+        val h = el.attr("height").toIntOrNull() ?: return false
+        return w <= 48 && h <= 48
     }
 
     /** 这个元素上最可信的一张图；全是占位/图标时返回 null */

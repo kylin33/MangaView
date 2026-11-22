@@ -3,6 +3,7 @@ package com.example.hellocompose.di
 import android.content.Context
 import coil.ImageLoader
 import com.example.hellocompose.data.history.HistoryRepository
+import com.example.hellocompose.data.image.ImageLoadStats
 import com.example.hellocompose.data.image.ImageRequestManager
 import com.example.hellocompose.data.image.MangaImageLoader
 import com.example.hellocompose.data.remote.JsoupHttpClient
@@ -61,9 +62,20 @@ class AppContainer(context: Context) {
     /** 全局唯一的 Coil 实例，内存与磁盘缓存共享，预加载和展示用同一个 */
     val imageLoader: ImageLoader = MangaImageLoader.create(appContext)
 
+    /** 本机解码档位：面板要显示「为什么给了几路并发」 */
+    val imageDeviceProfile = MangaImageLoader.deviceProfile(appContext)
+
+    /** 图片加载统计，全 App 一份；面板读它，重启清零 */
+    val imageStats = ImageLoadStats()
+
     /**
      * 图片请求层。阅读页拿它出请求、预加载也拿它出请求，
      * 两边同源才不会出现「预加载下一章，翻过去还是白屏」。
      */
-    val imageRequests: ImageRequestManager = ImageRequestManager(appContext, imageLoader)
+    val imageRequests: ImageRequestManager = ImageRequestManager(
+        context = appContext,
+        imageLoader = imageLoader,
+        stats = imageStats,
+        decodeConcurrency = imageDeviceProfile.concurrency
+    )
 }

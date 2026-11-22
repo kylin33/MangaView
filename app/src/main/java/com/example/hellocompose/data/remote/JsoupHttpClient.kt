@@ -61,6 +61,17 @@ class JsoupHttpClient(
         allowPlainHttp = source.allowPlainHttp
     )
 
+    /** 按站点配置发一次表单 POST（站内搜索用） */
+    fun post(source: SourceConfig, url: String, form: Map<String, String>): Document = post(
+        url = url,
+        form = form,
+        userAgent = source.userAgent,
+        referer = source.refererFor(url),
+        timeoutMs = source.timeoutMs,
+        trustAllCerts = source.trustAllCerts,
+        allowPlainHttp = source.allowPlainHttp
+    )
+
     /**
      * 不带站点配置的请求，供「自动识别站点」在配置尚未生成时使用。
      * 之后正式抓取一律走上面的重载，保证运行时行为只由配置决定。
@@ -72,6 +83,35 @@ class JsoupHttpClient(
         timeoutMs: Long = AppConfig.TIMEOUT_MS,
         trustAllCerts: Boolean = false,
         allowPlainHttp: Boolean = false
+    ): Document = request(url, null, userAgent, referer, timeoutMs, trustAllCerts, allowPlainHttp)
+
+    /**
+     * 表单 POST。
+     *
+     * 站内搜索用 POST 的站点不算多，但一类很常见的 CMS 模板就是这样：
+     * `<form action="/index.php" method="post"><input name="searchword">`。
+     * 只支持 GET 时，这类站的搜索永远识别不出来。
+     *
+     * 安全策略与 GET 完全一致（明文拦截、证书严格校验），不能因为换了方法就放宽。
+     */
+    fun post(
+        url: String,
+        form: Map<String, String>,
+        userAgent: String = AppConfig.USER_AGENT,
+        referer: String = "",
+        timeoutMs: Long = AppConfig.TIMEOUT_MS,
+        trustAllCerts: Boolean = false,
+        allowPlainHttp: Boolean = false
+    ): Document = request(url, form, userAgent, referer, timeoutMs, trustAllCerts, allowPlainHttp)
+
+    private fun request(
+        url: String,
+        form: Map<String, String>?,
+        userAgent: String,
+        referer: String,
+        timeoutMs: Long,
+        trustAllCerts: Boolean,
+        allowPlainHttp: Boolean
     ): Document {
         guardPlainHttp(url, allowPlainHttp)
 
@@ -82,7 +122,7 @@ class JsoupHttpClient(
         // 不重试的话用户翻页会随机看到"加载失败"。4xx 是确定性的（地址错、被拦），重试没意义。
         repeat(MAX_ATTEMPTS) { attempt ->
             try {
-                return request(url, userAgent, referer, timeoutMs, trustAllCerts)
+                return send(url, form, userAgent, referer, timeoutMs, trustAllCerts)
             } catch (e: SSLException) {
                 // 证书问题必须原样上抛，不能掉进下面的重试分支：
                 // 重试两次得到的是同一个结果，只会让用户多等 1.4 秒并看到更模糊的错误
@@ -121,8 +161,9 @@ class JsoupHttpClient(
         if (url.startsWith("http://", ignoreCase = true)) throw PlainHttpBlockedException(url)
     }
 
-    private fun request(
+    private fun send(
         url: String,
+        form: Map<String, String>?,
         userAgent: String,
         referer: String,
         timeoutMs: Long,
@@ -142,7 +183,12 @@ class JsoupHttpClient(
         if (trustAllCerts) {
             connection.sslSocketFactory(trustAllSocketFactory)
         }
-        return connection.get()
+        return if (form == null) {
+            connection.get()
+        } else {
+            // data() 会按 application/x-www-form-urlencoded 编码，与浏览器提交表单一致
+            connection.data(form).post()
+        }
     }
 
     private companion object {

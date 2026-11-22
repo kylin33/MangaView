@@ -8,6 +8,7 @@ import com.example.hellocompose.data.source.ImageUrlResolver
 import com.example.hellocompose.data.source.ListRule
 import com.example.hellocompose.data.source.ReaderRule
 import com.example.hellocompose.data.source.ScriptData
+import com.example.hellocompose.data.source.TitleNormalizer
 import com.example.hellocompose.data.source.pickByRule
 import com.example.hellocompose.data.source.readByRule
 import org.jsoup.nodes.Document
@@ -35,8 +36,10 @@ object PageParser {
             // 直接用 readByRule 取第一个非空属性，懒加载站点拿回来的会是 loading.gif
             val coverElement = element.pickByRule(rule.cover) ?: element
             val cover = ImageUrlResolver.imageUrl(coverElement, rule.cover.attr, baseUrl)
-            // 标题优先取规则指定属性；很多站封面图 alt 为空，退化成条目里第一个有文字的链接
-            val title = titleText(element, rule.title)
+            // 标题优先取规则指定属性；很多站封面图 alt 为空，退化成条目里第一个有文字的链接。
+            // 链接元素要一起传进去：站点常把书名同时写在 <a title="书名"> 上，
+            // 而可见文字是被时间徽章污染过的（「14小时前 书名」），两者要合并取干净的那个
+            val title = titleText(element, rule.title, linkElement)
                 .ifBlank { linkElement?.text()?.trim().orEmpty() }
 
             if (rawLink.isBlank() || cover.isBlank()) {
@@ -56,8 +59,14 @@ object PageParser {
             ScriptData.chapters(doc, script, baseUrl).takeIf { it.isNotEmpty() }?.let { return it }
         }
         return doc.select(rule.item).mapNotNull { element ->
-            val href = element.pickByRule(rule.url).readByRule(rule.url.attr)
-            val title = element.pickByRule(rule.title).readByRule(rule.title.attr)
+            val linkElement = element.pickByRule(rule.url)
+            val href = linkElement.readByRule(rule.url.attr)
+            // 章节名同样要合并：站点会把过长的章节名截断成「第1话-阿姨，我」，
+            // 完整名字在 <a title> 上。不补全会导致章节列表一片残句
+            val title = TitleNormalizer.merge(
+                element.pickByRule(rule.title).readByRule(rule.title.attr),
+                linkElement?.attr("title").orEmpty()
+            )
             if (href.isBlank() || title.isBlank()) {
                 null
             } else {
@@ -89,14 +98,28 @@ object PageParser {
      * [com.example.hellocompose.engine.autogen.SourceAutoDetector] 的标题质量评分，
      * 这里保证「评分看到的值」和「运行时取到的值」是同一个。
      */
-    fun titleText(item: Element, rule: FieldRule): String {
+    fun titleText(item: Element, rule: FieldRule, link: Element? = null): String {
         val primary = item.pickByRule(rule).readByRule(rule.attr).trim()
-        if (primary.isNotBlank()) return primary
-        return TITLE_TEXT_CARRIERS
-            .firstNotNullOfOrNull { item.select(it).firstOrNull { el -> el.text().isNotBlank() } }
-            ?.text()
-            ?.trim()
-            .orEmpty()
+        val visible = primary.ifBlank {
+            TITLE_TEXT_CARRIERS
+                .firstNotNullOfOrNull { item.select(it).firstOrNull { el -> el.text().isNotBlank() } }
+                ?.text()
+                ?.trim()
+                .orEmpty()
+        }
+        return TitleNormalizer.merge(visible, anchorTitleOf(item, link))
+    }
+
+    /**
+     * 条目上「完整标题」的候选来源。
+     *
+     * 优先用详情链接自己的 `title` 属性 —— 它和书名/章节名是同一个东西，
+     * 只是被 CSS 截断后没显示全。退而求其次才看条目自身和内部第一个带 title 的链接。
+     */
+    private fun anchorTitleOf(item: Element, link: Element?): String {
+        link?.attr("title")?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        item.attr("title").trim().takeIf { it.isNotEmpty() }?.let { return it }
+        return item.selectFirst("a[title]")?.attr("title")?.trim().orEmpty()
     }
 
     /** 书名常见载体，按「越常见越先」排：链接文字 → 加粗 → 字号标签（老站） */

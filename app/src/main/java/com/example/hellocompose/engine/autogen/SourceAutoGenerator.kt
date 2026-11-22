@@ -12,9 +12,11 @@ import com.example.hellocompose.data.remote.TlsProblem
 import com.example.hellocompose.data.source.DetailRule
 import com.example.hellocompose.data.source.Dom
 import com.example.hellocompose.data.source.FieldRule
+import com.example.hellocompose.data.source.HttpMethod
 import com.example.hellocompose.data.source.ListRule
 import com.example.hellocompose.data.source.ReaderRule
 import com.example.hellocompose.data.source.ScriptData
+import com.example.hellocompose.data.source.SearchRequestBuilder
 import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.data.source.SourceJson
 import com.example.hellocompose.data.source.SourceParser
@@ -59,10 +61,14 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         val imageSamples: List<String>,
         /** 是否推出了可用的搜索地址 */
         val searchPath: String? = null,
+        /** 搜索规则是怎么来的：表单推断 / 试出地址 / 生僻词探测确认 */
+        val searchNote: String? = null,
         /** 非空表示这份配置带着用户确认过的安全例外，界面必须醒目提示 */
         val insecure: InsecurePolicy?,
         /** 这套选择器有多可信。分阶段保留依据，方便回答「哪一步最可疑」 */
         val confidence: DetectionConfidence,
+        /** 各阶段「靠什么抓到的」，用于解释结果和定位弱项 */
+        val capabilities: SiteCapabilities? = null,
         val warnings: List<String>
     )
 
@@ -106,6 +112,11 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         onStep("打开首页")
 
         val (homeDoc, resolvedBase, activePolicy) = loadHome(baseUrl, path, policy, onStep)
+        // 表单的 action 是相对**首页地址**解析的，不能拿站点根地址顶替：
+        // 首页在 /list/hot 这种子路径时，`action="search.php"` 指的是 /list/search.php
+        val homeUrl = runCatching { homeDoc.location() }.getOrNull()
+            ?.takeIf { it.startsWith("http") }
+            ?: (resolvedBase.trimEnd('/') + path)
         val warnings = mutableListOf<String>()
 
         val homeGuesses = SourceAutoDetector.detectHome(homeDoc, resolvedBase)
@@ -127,7 +138,7 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         // 前提是目录和图片必须真的能抓 —— 否则就是给用户一个空壳配置。
         if (homeGuesses.isEmpty() && scriptHome == null) {
             onStep("首页没找到列表，试试搜索")
-            val entry = detectSearchEntry(homeDoc, resolvedBase, activePolicy, onStep)
+            val entry = detectSearchEntry(homeDoc, homeUrl, resolvedBase, activePolicy, onStep)
                 ?: throw EmptyPageException(
                     "首页没有可用的漫画列表，站内搜索也拿不到结果。" +
                         "这个站点的内容可能完全由脚本动态渲染，当前版本抓不到"
@@ -158,7 +169,10 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
                 detail = chapterGuess.rule,
                 reader = readerGuess.rule
             )
-            return finish(config, resolvedBase, 0, emptyList(), chapterGuess, readerGuess, activePolicy, warnings)
+            return finish(
+                config, resolvedBase, 0, emptyList(), null,
+                chapterGuess, readerGuess, activePolicy, warnings
+            )
         }
 
         val homeGuess = scriptHome ?: homeGuesses.first()
@@ -176,7 +190,7 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         onStep("首页识别到 ${finalHome.items.size} 部作品")
 
         // ---- 搜索：试几个常见的搜索地址，能用就写进配置 ----
-        val searchRule = detectSearch(finalHome, effectiveBase, activePolicy, onStep)
+        val search = detectSearch(finalHome, effectiveBase, homeUrl, homeDoc, activePolicy, onStep)
 
         // ---- 详情页：找章节列表 ----
         val detailUrls = finalHome.items.map { it.detailUrl }.filter { it.startsWith("http") }
@@ -208,13 +222,13 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             trustAllCerts = activePolicy.trustAllCerts,
             allowPlainHttp = activePolicy.allowPlainHttp,
             home = finalHome.rule.copy(path = path),
-            search = searchRule,
+            search = search?.rule,
             detail = chapterGuess.rule,
             reader = readerGuess.rule
         )
         return finish(
-            config, effectiveBase, finalHome.items.size, finalHome.items,
-            chapterGuess, readerGuess, activePolicy, warnings
+            config, effectiveBase, finalHome.items.size, finalHome.items, finalHome.capabilities,
+            chapterGuess, readerGuess, activePolicy, warnings, search?.note
         )
     }
 
@@ -337,14 +351,20 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         baseUrl: String,
         homeCount: Int,
         homeItems: List<Manga>,
+        homeCaps: SiteCapabilities?,
         chapterGuess: SourceAutoDetector.ChapterGuess,
         readerGuess: SourceAutoDetector.ReaderGuess,
         policy: InsecurePolicy,
-        warnings: List<String>
+        warnings: List<String>,
+        searchNote: String? = null
     ): Result {
         // 置信度在编码之前算：它要跟着配置一起落进 JSON，
         // 以后排查「这份配置当时是怎么来的」不用再靠记忆
         val confidence = confidenceOf(homeItems, chapterGuess, readerGuess, config.isSearchOnly)
+        val capabilities = mergeCapabilities(homeCaps, chapterGuess, readerGuess)
+        // 能力层面的弱项要说给用户听：它们不影响「能不能用」，但决定「好不好用」。
+        // 比如书名只能读可见文字，某些条目就会带上更新时间
+        val allWarnings = (warnings + capabilities?.weakPoints.orEmpty()).distinct()
         val withConfidence = config.copy(confidence = confidence.toSourceConfidence())
 
         val json = SourceJson.encode(withConfidence)
@@ -363,10 +383,43 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
                 imageCount = readerGuess.images.size,
                 imageSamples = readerGuess.images.take(2).map { it.substringAfterLast('/') },
                 searchPath = withConfidence.search?.path,
+                searchNote = withConfidence.search?.let { searchNote },
                 insecure = policy.takeIf { !it.isStrict },
                 confidence = confidence,
-                warnings = warnings
+                capabilities = capabilities,
+                warnings = allWarnings
             )
+        )
+    }
+
+    /**
+     * 把三个阶段的能力快照合成一份。
+     *
+     * 每一格取「第一个明确探测到的阶段」：列表/封面/标题只有首页能探测，
+     * 章节和正文图分别来自详情页和阅读页。空值不覆盖已有值 ——
+     * 阅读页探测不到标题通道，不代表首页那条结论失效。
+     */
+    private fun mergeCapabilities(
+        home: SiteCapabilities?,
+        chapters: SourceAutoDetector.ChapterGuess,
+        reader: SourceAutoDetector.ReaderGuess
+    ): SiteCapabilities? {
+        val chapterCaps = chapters.capabilities
+        val readerCaps = reader.capabilities
+        val hasAnything = home != null || chapterCaps.chapters != Channel.NONE ||
+            readerCaps.images != Channel.NONE
+        if (!hasAnything) return null
+
+        return SiteCapabilities(
+            list = home?.list ?: Channel.NONE,
+            listStrength = home?.listStrength ?: 0.0,
+            cover = home?.cover ?: Channel.NONE,
+            coverStrength = home?.coverStrength ?: 0.0,
+            // 首页没探到标题通道时，退到详情页的结论（章节标题同样是标题）
+            title = home?.title?.takeIf { it != Channel.NONE } ?: chapterCaps.title,
+            titleStrength = home?.titleStrength?.takeIf { it > 0 } ?: chapterCaps.titleStrength,
+            chapters = chapterCaps.chapters,
+            images = readerCaps.images
         )
     }
 
@@ -431,6 +484,7 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
      */
     private fun detectSearchEntry(
         homeDoc: Document,
+        pageUrl: String,
         baseUrl: String,
         policy: InsecurePolicy,
         onStep: (String) -> Unit
@@ -445,9 +499,20 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             .filter { it.length in 2..12 }
             .distinct()
 
-        for (template in SEARCH_PATHS) {
+        val budget = SearchBudget(MAX_SEARCH_REQUESTS)
+        // 这里没有首页列表规则可用，表单只提供「请求形态」，选择器留给 searchResultOf 现探
+        val placeholder = ListRule(path = "/", item = "")
+        val candidates = formCandidates(SearchFormScanner.scan(homeDoc, pageUrl, baseUrl), placeholder) +
+            templateCandidates(placeholder) +
+            paramCandidates(placeholder, homeDoc)
+
+        for (candidate in candidates) {
             for (probe in probes) {
-                val attempt = searchOnce(template, probe, null, minSize = 2, baseUrl, policy)
+                if (budget.exhausted) {
+                    onStep("搜索请求已达上限，停止尝试")
+                    return null
+                }
+                val attempt = searchOnce(candidate, probe, null, minSize = 2, baseUrl, policy, budget)
                 // 关键词在最终地址里没保住 → 该参数不被支持，返回的是默认列表
                 if (!attempt.fetched || !attempt.keywordKept) continue
                 val entry = attempt.entry ?: continue
@@ -458,12 +523,12 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
                 // 很多站对不认识的参数直接返回热门列表，那页面和真实结果长得完全一样。
                 val echo = probeKeyword(entry.items.getOrNull(1)?.title.orEmpty())
                 if (echo.isNotBlank() && echo != probe) {
-                    val verdict = keywordVerdict(template, echo, entry.items, null, baseUrl, policy)
+                    val verdict = keywordVerdict(candidate, echo, entry.items, null, baseUrl, policy, budget)
                     // 证明不了关键词生效就不写进配置：宁可没有搜索，也不要一个永远返回热门列表的假搜索
                     if (verdict != KeywordVerdict.MATTERS) continue
                 }
 
-                onStep("搜索可用（$template），找到 ${entry.items.size} 部")
+                onStep("搜索可用（${candidate.rule.path}），找到 ${entry.items.size} 部")
                 return entry
             }
         }
@@ -479,19 +544,20 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
     private fun searchResultOf(
         doc: Document,
         baseUrl: String,
-        template: String,
+        candidate: SearchCandidate,
         minSize: Int
     ): SearchEntry? {
         val domGuess = SourceAutoDetector.detectHome(doc, baseUrl, minSize).firstOrNull()
         if (domGuess != null && domGuess.items.size >= minSize) {
-            return SearchEntry(domGuess.rule.copy(path = template), domGuess.items)
+            return SearchEntry(domGuess.rule.adoptRequestFrom(candidate), domGuess.items)
         }
 
         for (scriptRule in SourceAutoDetector.detectScriptLists(doc, baseUrl, minSize)) {
             val items = ScriptData.list(doc, scriptRule, baseUrl)
             if (items.size < minSize) continue
             return SearchEntry(
-                ListRule(path = template, item = "", script = scriptRule),
+                ListRule(path = candidate.rule.path, item = "", script = scriptRule)
+                    .adoptRequestFrom(candidate),
                 items
             )
         }
@@ -499,6 +565,76 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
     }
 
     private data class SearchEntry(val rule: ListRule, val items: List<Manga>)
+
+    /**
+     * 一条完整的搜索候选：请求形态（path / method / 参数名 / 固定参数）+ 它是怎么来的。
+     *
+     * 单独建模是因为「怎么发这个请求」和「从返回页面里怎么取条目」已经是两件事：
+     * 前者可能来自页面表单、地址模板或者生僻词探测，后者统一走 [searchResultOf]。
+     * 以前两者挤在一个 `template: String` 里，POST 表单和隐藏域根本表达不出来。
+     */
+    private data class SearchCandidate(
+        val rule: ListRule,
+        /** 写进识别步骤的说明，例如「表单 /index.php」 */
+        val label: String
+    )
+
+    /** 搜索请求预算。识别一个站点最多发这么多次与搜索相关的请求 */
+    private class SearchBudget(private var left: Int) {
+        fun take(): Boolean {
+            if (left <= 0) return false
+            left--
+            return true
+        }
+
+        val exhausted: Boolean get() = left <= 0
+    }
+
+    /**
+     * 把候选的「请求形态」套到一条已验证的列表规则上。
+     *
+     * 容易漏掉的一步：搜索结果页的 DOM 结构和首页一样，所以选择器直接复用；
+     * 但 method / 参数名 / 隐藏域来自候选，复制时必须一起带上 ——
+     * 漏了的话，一条 POST 表单推出来的规则会变成 GET 请求，而它永远不会成功。
+     */
+    private fun ListRule.adoptRequestFrom(candidate: SearchCandidate): ListRule = copy(
+        path = candidate.rule.path,
+        method = candidate.rule.method,
+        keywordParam = candidate.rule.keywordParam,
+        fields = candidate.rule.fields
+    )
+
+    /** 表单候选：页面自己声明的搜索方式，可信度最高，排在所有猜测前面 */
+    private fun formCandidates(forms: List<SearchForm>, homeRule: ListRule): List<SearchCandidate> =
+        forms.map { form ->
+            SearchCandidate(rule = form.ruleOver(homeRule), label = "表单 ${form.action}")
+        }
+
+    /** 常见地址模板：没有表单可读时的第一层兜底，顺序按真实站点里的出现频率 */
+    private fun templateCandidates(homeRule: ListRule): List<SearchCandidate> =
+        SEARCH_PATHS.map { path ->
+            SearchCandidate(homeRule.copy(path = path), path)
+        }
+
+    /**
+     * 参数名候选：把「DOM 里出现过的参数名」和「常见入口路径」交叉组合。
+     *
+     * 只用于生僻词探测 —— 每一条都直接拿书名去试的话请求量是现在的两三倍，
+     * 站点一旦限流，连本来能用的地址都会失败。
+     */
+    private fun paramCandidates(homeRule: ListRule, homeDoc: Document): List<SearchCandidate> {
+        val hints = SearchFormScanner.paramHints(homeDoc).take(MAX_PARAM_HINTS)
+        val paths = if (hints.isEmpty()) {
+            // 连一个像搜索的输入框都没有：退到最常见参数名，别再指望能猜中
+            listOf("/?s={keyword}", "/search?q={keyword}", "/s?wd={keyword}")
+        } else {
+            // 参数名优先：同一个参数名在哪个入口上都试一下，比死守一个入口更容易命中
+            hints.flatMap { hint -> SEARCH_ENTRY_PATHS.map { "$it?$hint={keyword}" } }
+        }
+        return paths.distinct()
+            .take(MAX_PROBE_CANDIDATES)
+            .map { SearchCandidate(homeRule.copy(path = it), it) }
+    }
 
     /**
      * 首页 DOM 里没有列表时，把整页当成一个「脚本列表」来读。
@@ -565,7 +701,17 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
     private enum class KeywordVerdict { MATTERS, IGNORED, UNKNOWN }
 
     /**
-     * 推出搜索地址。
+     * 推出搜索规则。
+     *
+     * 三条路依次试，**从「站点自己说的」走到「我们猜的」**：
+     * 1. **页面上的搜索表单**。`<form action method>` + `<input name>` 就是站点自报的
+     *    请求路径、提交方式和参数名。这是唯一能表达「POST + 隐藏域」的来源，
+     *    而那类站点以前只能被写成「没有搜索」。
+     * 2. **常见地址模板**。没有表单（或表单被 JS 接管）时的兜底。
+     * 3. **生僻词探测**。表单读不到、参数名只能从 DOM 里猜时，先用一个页面上绝不会出现的词
+     *    探一次，看页面会不会把它回显出来（「没有找到与 zzqxqz 相关的内容」）。
+     *    这比直接拿书名去试便宜得多：一个请求就能否掉一个参数名，
+     *    而直接试要两个请求，一轮下来几十个请求，站点限流后连本来能用的地址都会失败。
      *
      * 三个难点：
      * 1. **怎么知道搜索真的生效**。有的站搜不到时重定向回首页，有的站给一屏无关推荐，
@@ -582,9 +728,11 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
     private fun detectSearch(
         home: SourceAutoDetector.HomeGuess,
         baseUrl: String,
+        pageUrl: String,
+        homeDoc: Document,
         policy: InsecurePolicy,
         onStep: (String) -> Unit
-    ): ListRule? {
+    ): SearchDetected? {
         val first = home.items.getOrNull(0)?.title?.trim().orEmpty()
         val second = home.items.getOrNull(1)?.title?.trim().orEmpty()
         if (first.isBlank()) return null
@@ -598,73 +746,177 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         val canCompare = keywordB.isNotBlank() &&
             !keywordB.contains(keywordA.take(3)) && !keywordA.contains(keywordB.take(3))
 
-        for (template in SEARCH_PATHS) {
-            val attemptA = searchOnce(template, keywordA, home, minSize = 1, baseUrl, policy)
-            if (!attemptA.fetched) {
-                onStep("跳过 $template：打不开")
+        val context = VerifyContext(
+            home = home,
+            homeUrls = homeUrls,
+            firstTitle = first,
+            keywordA = keywordA,
+            keywordB = keywordB,
+            canCompare = canCompare,
+            baseUrl = baseUrl,
+            policy = policy,
+            budget = SearchBudget(MAX_SEARCH_REQUESTS),
+            onStep = onStep
+        )
+
+        // ---- 1. 页面上的搜索表单 ----
+        val forms = SearchFormScanner.scan(homeDoc, pageUrl, baseUrl)
+        if (forms.isNotEmpty()) onStep("页面里有 ${forms.size} 个候选搜索框")
+        for (form in forms) {
+            val candidate = SearchCandidate(form.ruleOver(home.rule), "表单 ${form.action}")
+            val hit = verify(candidate, context) ?: continue
+            onStep("搜索可用（${form.method.token.uppercase()} ${form.keywordParam}）")
+            return SearchDetected(
+                rule = hit.rule,
+                note = "按页面搜索表单推断：${form.method.token.uppercase()} ${form.keywordParam}" +
+                    "（${form.reason}）"
+            )
+        }
+
+        // ---- 2. 常见地址模板 ----
+        val tried = mutableSetOf<String>()
+        for (candidate in templateCandidates(home.rule)) {
+            tried += candidate.rule.path
+            if (context.budget.exhausted) {
+                onStep("搜索请求已达上限，停止尝试")
+                return null
+            }
+            val hit = verify(candidate, context) ?: continue
+            onStep("搜索可用（${candidate.rule.path}）")
+            return SearchDetected(rule = hit.rule, note = "试出可用的搜索地址")
+        }
+
+        // ---- 3. 生僻词探测 ----
+        val probed = paramCandidates(home.rule, homeDoc).filterNot { it.rule.path in tried }
+        for (candidate in probed) {
+            if (context.budget.exhausted) {
+                onStep("搜索请求已达上限，停止探测")
+                return null
+            }
+            val attempt = searchOnce(candidate, RARE_PROBE_TOKEN, null, minSize = 1, baseUrl, policy, context.budget)
+            if (!attempt.fetched || !attempt.keywordKept) continue
+            val echo = attempt.doc?.let { keywordEcho(it, RARE_PROBE_TOKEN) } ?: 0
+            if (echo < ECHO_MIN_SCORE) {
+                onStep("探测 ${candidate.rule.path}：页面没有回显关键词，不像搜索接口")
                 continue
             }
-            // 关键词在最终地址里都没保住，说明这个参数不被支持（或跳去了登录页）
-            if (!attemptA.keywordKept) {
-                onStep("跳过 $template：参数被丢掉")
-                continue
-            }
-            val itemsA = attemptA.entry?.items.orEmpty()
-            if (itemsA.isEmpty()) {
-                onStep("跳过 $template：没解析出结果")
-                continue
+            onStep("探测确认 ${candidate.rule.path} 会使用关键词，再用书名验证")
+            // 回显只证明「这个地址吃这个参数」，条目能不能取出来还得真搜一次
+            val hit = verify(candidate, context) ?: continue
+            onStep("搜索可用（探测确认：${candidate.rule.path}）")
+            return SearchDetected(
+                rule = hit.rule,
+                note = "生僻词 $RARE_PROBE_TOKEN 被页面回显，确认参数生效"
+            )
+        }
+
+        return null
+    }
+
+    /** 识别出来的搜索规则 + 它凭什么被采纳（写进报告，方便回头看） */
+    private data class SearchDetected(val rule: ListRule, val note: String)
+
+    /** 一次验证要用到的上下文，参数太多，打包避免调用处一长串 */
+    private class VerifyContext(
+        val home: SourceAutoDetector.HomeGuess,
+        val homeUrls: Set<String>,
+        val firstTitle: String,
+        val keywordA: String,
+        val keywordB: String,
+        val canCompare: Boolean,
+        val baseUrl: String,
+        val policy: InsecurePolicy,
+        val budget: SearchBudget,
+        val onStep: (String) -> Unit
+    )
+
+    /**
+     * 验证一条候选：真的搜一次，再用「换个词结果变不变」做反向排除。
+     *
+     * 完整校验（而不是只发一次请求看有没有结果）是必须的：
+     * 忽略关键字的站点会返回一屏热门列表，长得和真实结果一模一样，
+     * 而且热门里往往正好有首页那本书，看起来更像成功了。
+     */
+    private fun verify(candidate: SearchCandidate, context: VerifyContext): SearchEntry? {
+        val label = candidate.label
+        if (context.budget.exhausted) {
+            context.onStep("搜索请求已达上限，停止尝试 $label")
+            return null
+        }
+        val attemptA = searchOnce(
+            candidate, context.keywordA, context.home, minSize = 1,
+            context.baseUrl, context.policy, context.budget
+        )
+        if (!attemptA.fetched) {
+            context.onStep("跳过 $label：打不开")
+            return null
+        }
+        // 关键词在最终地址里都没保住，说明这个参数不被支持（或跳去了登录页）
+        if (!attemptA.keywordKept) {
+            context.onStep("跳过 $label：参数被丢掉")
+            return null
+        }
+        val itemsA = attemptA.entry?.items.orEmpty()
+        if (itemsA.isEmpty()) {
+            context.onStep("跳过 $label：没解析出结果")
+            return null
+        }
+
+        // 结果条数够多、且几乎就是首页那一屏 → 关键字被忽略（多半重定向回首页）
+        val overlap = itemsA.count { it.detailUrl in context.homeUrls }.toDouble() / itemsA.size
+        if (itemsA.size >= 5 && overlap >= 0.7) {
+            context.onStep("跳过 $label：结果就是首页那一屏")
+            return null
+        }
+
+        val verdict = if (context.canCompare) {
+            keywordVerdict(candidate, context.keywordB, itemsA, context.home, context.baseUrl, context.policy, context.budget)
+        } else {
+            KeywordVerdict.UNKNOWN
+        }
+
+        val hitTarget = itemsA.any { it.detailUrl in context.homeUrls }
+        return when (verdict) {
+            KeywordVerdict.IGNORED -> {
+                context.onStep("跳过 $label：换个关键词结果没变，关键字被忽略")
+                null
             }
 
-            // 结果条数够多、且几乎就是首页那一屏 → 关键字被忽略（多半重定向回首页）
-            val overlap = itemsA.count { it.detailUrl in homeUrls }.toDouble() / itemsA.size
-            if (itemsA.size >= 5 && overlap >= 0.7) {
-                onStep("跳过 $template：结果就是首页那一屏")
-                continue
-            }
-
-            val verdict = if (canCompare) keywordVerdict(template, keywordB, itemsA, home, baseUrl, policy)
-            else KeywordVerdict.UNKNOWN
-
-            val hitTarget = itemsA.any { it.detailUrl in homeUrls }
-            when (verdict) {
-                KeywordVerdict.IGNORED -> {
-                    onStep("跳过 $template：换个关键词结果没变，关键字被忽略")
-                    continue
-                }
-                KeywordVerdict.MATTERS -> {
-                    if (hitTarget || itemsA.any { it.title.contains(first.take(3)) }) {
-                        onStep("搜索可用（$template）")
-                        return attemptA.entry!!.rule
-                    }
+            KeywordVerdict.MATTERS -> {
+                if (hitTarget || itemsA.any { it.title.contains(context.firstTitle.take(3)) }) {
+                    attemptA.entry
+                } else {
                     // 关键字生效但连测试书都搜不回来，说明这个地址搜的不是作品名
-                    onStep("跳过 $template：关键字生效但搜不到目标作品")
-                    continue
+                    context.onStep("跳过 $label：关键字生效但搜不到目标作品")
+                    null
                 }
-                KeywordVerdict.UNKNOWN -> {
-                    // 无法换词验证时只剩一条硬证据：结果里确实有目标书，
-                    // 且结果规模明显小于首页（默认列表一般不少于首页全部作品）。
-                    if (hitTarget && itemsA.size < home.items.size) {
-                        onStep("搜索可用（$template，未能换词验证）")
-                        return attemptA.entry!!.rule
-                    }
-                    onStep("跳过 $template：无法验证关键字是否生效")
-                    continue
+            }
+
+            KeywordVerdict.UNKNOWN -> {
+                // 无法换词验证时只剩一条硬证据：结果里确实有目标书，
+                // 且结果规模明显小于首页（默认列表一般不少于首页全部作品）。
+                if (hitTarget && itemsA.size < context.home.items.size) {
+                    context.onStep("搜索结果（$label，未能换词验证）")
+                    attemptA.entry
+                } else {
+                    context.onStep("跳过 $label：无法验证关键字是否生效")
+                    null
                 }
             }
         }
-        return null
     }
 
     /** 用第二个关键词再搜一次，看结果是否随关键词变化 */
     private fun keywordVerdict(
-        template: String,
+        candidate: SearchCandidate,
         keywordB: String,
         itemsA: List<Manga>,
         home: SourceAutoDetector.HomeGuess?,
         baseUrl: String,
-        policy: InsecurePolicy
+        policy: InsecurePolicy,
+        budget: SearchBudget
     ): KeywordVerdict {
-        val attemptB = searchOnce(template, keywordB, home, minSize = 1, baseUrl, policy)
+        val attemptB = searchOnce(candidate, keywordB, home, minSize = 1, baseUrl, policy, budget)
         // 请求没成功 ≠ 关键字无效：这两种情况必须分开，否则会把真搜索判成假的
         if (!attemptB.fetched || !attemptB.keywordKept) return KeywordVerdict.UNKNOWN
 
@@ -674,42 +926,91 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         return if (similarResults(itemsA, itemsB)) KeywordVerdict.IGNORED else KeywordVerdict.MATTERS
     }
 
-    /** 用某个模板 + 关键词真的搜一次，同时处理 DOM / 内联脚本两种页面 */
+    /** 用某条候选 + 关键词真的搜一次，同时处理 DOM / 内联脚本两种页面 */
     private fun searchOnce(
-        template: String,
+        candidate: SearchCandidate,
         keyword: String,
         home: SourceAutoDetector.HomeGuess?,
         minSize: Int,
         baseUrl: String,
-        policy: InsecurePolicy
+        policy: InsecurePolicy,
+        budget: SearchBudget
     ): SearchAttempt {
-        val encoded = URLEncoder.encode(keyword, "UTF-8")
-        val pageUrl = baseUrl + template.replace("{keyword}", encoded)
-        val doc = runCatching { fetch(pageUrl, "$baseUrl/", policy) }.getOrNull()
-            ?: return SearchAttempt(null, keywordKept = false, fetched = false)
+        if (!budget.take()) return SearchAttempt(null, keywordKept = false, fetched = false, doc = null)
+        val request = SearchRequestBuilder.build(candidate.rule, keyword, baseUrl)
+        val doc = runCatching {
+            when (request.method) {
+                // POST 不能靠「地址里还有没有关键词」判断，只能靠换词验证
+                HttpMethod.POST -> pages.post(
+                    url = request.url,
+                    form = request.body,
+                    referer = "$baseUrl/",
+                    trustAllCerts = policy.trustAllCerts,
+                    allowPlainHttp = policy.allowPlainHttp
+                )
+                HttpMethod.GET -> fetch(request.url, "$baseUrl/", policy)
+            }
+        }.getOrNull() ?: return SearchAttempt(null, keywordKept = false, fetched = false, doc = null)
 
         // 最终的 URL 里还得留着关键词。
         // 这条比"结果看起来对不对"直接得多：不支持该参数的站点往往 301 到 /search，
         // 参数被丢掉，之后返回的都是热门/默认列表 —— 那种页面和真实结果长得一模一样。
-        val finalUrl = runCatching { doc.location() }.getOrNull().orEmpty()
-        val kept = finalUrl.contains(encoded) || finalUrl.contains(keyword)
+        val kept = if (request.method == HttpMethod.POST) {
+            // 表单提交的关键词在请求体里，地址里本来就没有，不能因此判失败
+            true
+        } else {
+            val finalUrl = runCatching { doc.location() }.getOrNull().orEmpty()
+            finalUrl.contains(URLEncoder.encode(keyword, "UTF-8")) || finalUrl.contains(keyword)
+        }
 
         // 搜索结果页通常就是首页那套模板，先复用已验证的规则
         if (home != null) {
             val byHomeRule = PageParser.list(doc, home.rule, baseUrl)
             if (byHomeRule.isNotEmpty()) {
-                return SearchAttempt(SearchEntry(home.rule.copy(path = template), byHomeRule), kept, true)
+                return SearchAttempt(
+                    SearchEntry(home.rule.adoptRequestFrom(candidate), byHomeRule),
+                    kept, true, doc
+                )
             }
         }
-        return SearchAttempt(searchResultOf(doc, baseUrl, template, minSize), kept, true)
+        return SearchAttempt(searchResultOf(doc, baseUrl, candidate, minSize), kept, true, doc)
     }
 
-    /** `fetched` 区分「请求就没成功」和「请求成功但没结果」——两者的含义完全相反 */
+    /**
+     * `fetched` 区分「请求就没成功」和「请求成功但没结果」——两者的含义完全相反。
+     * `doc` 留给生僻词探测看回显。
+     */
     private data class SearchAttempt(
         val entry: SearchEntry?,
         val keywordKept: Boolean,
-        val fetched: Boolean
+        val fetched: Boolean,
+        val doc: Document?
     )
+
+    /**
+     * 页面把关键词回显得有多明显。
+     *
+     * 只在**生僻词探测**里用：拿书名去搜时，「搜到了」本身已经能证明参数生效，
+     * 再去看回显是多余的。而拿一个页面上绝不会出现的词去搜时，唯一的线索就是
+     * 页面有没有把它说出来 —— 搜索结果页的标题/面包屑常写成
+     * 「搜索 zzqxqz」「没有找到与 zzqxqz 相关的内容」。
+     *
+     * 分数给法：标题或大标题里出现最可信（2 分），正文里出现只算 1 分，
+     * 因为 404 页面也会把整条地址抄进正文，光凭正文容易把错误页当成搜索页。
+     */
+    private fun keywordEcho(doc: Document, keyword: String): Int {
+        if (keyword.isBlank()) return 0
+        // 404 / 错误页常常把地址抄进正文，先整体排掉
+        if (NOT_FOUND_HINT.containsMatchIn(doc.title()) || NOT_FOUND_HINT.containsMatchIn(doc.body().text().take(400))) {
+            return 0
+        }
+        var score = 0
+        if (doc.title().contains(keyword, ignoreCase = true)) score += 2
+        if (doc.select("h1, h2, h3").any { it.text().contains(keyword, ignoreCase = true) }) score += 2
+        val body = doc.body().text()
+        if (body.contains(keyword, ignoreCase = true)) score += 1
+        return score
+    }
 
     /**
      * 两次搜索的结果是不是同一批作品。
@@ -951,6 +1252,38 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
 
     private companion object {
         /**
+         * 一次识别里最多发多少个搜索请求。
+         *
+         * 搜索是唯一会「按组合爆炸」的阶段：地址形态 × 参数名 × 试验词。
+         * 没有上限的话，一个没有搜索的站点会被几十个 404 拖成几十秒，
+         * 中途被限流之后连本来能用的地址也会失败 —— 那才是最难排查的假阴性。
+         */
+        const val MAX_SEARCH_REQUESTS = 36
+
+        /** 从 DOM 里最多采纳几个参数名候选：再多就说明这些 name 里大部分不是搜索框 */
+        const val MAX_PARAM_HINTS = 4
+
+        /** 生僻词探测最多试几条组合 */
+        const val MAX_PROBE_CANDIDATES = 8
+
+        /** 回显分数达到这个值才认为「页面确实用上了这个关键词」 */
+        const val ECHO_MIN_SCORE = 2
+
+        /**
+         * 生僻词探测用的词。
+         *
+         * 选它的标准只有一条：正常漫画站的内容里不可能出现。
+         * 所以只要页面把它显示出来，就一定是「站点把用户输入回显了」——
+         * 这是唯一不需要先搜到东西就能确认「参数生效」的证据。
+         */
+        const val RARE_PROBE_TOKEN = "zzqxqz"
+
+        /** 出现这些字样的页面是错误页，即使正文里抄了地址也不算回显 */
+        val NOT_FOUND_HINT = Regex("404|not found|页面不存在|找不到页面|访问出错", RegexOption.IGNORE_CASE)
+
+        /** 参数名探测时的入口路径，按真实站点频率排 */
+        val SEARCH_ENTRY_PATHS = listOf("/search", "/s", "/index.php", "/")
+        /**
          * 正文由脚本/接口下发的痕迹。
          *
          * 命中这些特征的阅读页，正文容器是空的，图片在接口返回里（有的还加密），
@@ -974,6 +1307,8 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             "/search?q={keyword}",
             "/search?key={keyword}",
             "/search?wd={keyword}",
+            // WordPress 系（含大量套 Madara 主题的漫画站）：关键字固定叫 s，挂在根路径上
+            "/?s={keyword}",
             // 路径形式：苹果CMS / qTcms 系模板常把关键字直接拼进 path
             "/msearch/{keyword}",
             "/search/{keyword}",

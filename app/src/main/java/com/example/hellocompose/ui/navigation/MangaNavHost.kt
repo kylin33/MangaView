@@ -19,6 +19,7 @@ import com.example.hellocompose.ui.home.HomeScreen
 import com.example.hellocompose.ui.reader.ReaderScreen
 import com.example.hellocompose.ui.search.SearchScreen
 import com.example.hellocompose.ui.source.SourceEditorScreen
+import com.example.hellocompose.ui.stats.ImageStatsScreen
 import kotlinx.coroutines.launch
 
 @Composable
@@ -104,8 +105,15 @@ fun MangaNavHost(
                 },
                 onEditSource = { source ->
                     navController.navigate(Destinations.sourceEditor(source.id))
+                },
+                onStatsClick = {
+                    navController.navigate(Destinations.STATS)
                 }
             )
+        }
+
+        composable(Destinations.STATS) {
+            ImageStatsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -221,7 +229,8 @@ fun MangaNavHost(
                 onBack = { navController.popBackStack() },
                 onSwitchSource = { source, manga, chapter ->
                     openSwitched(SwitchSelection(source, manga, chapter))
-                }
+                },
+                onOpenStats = { navController.navigate(Destinations.STATS) }
             )
         }
     }

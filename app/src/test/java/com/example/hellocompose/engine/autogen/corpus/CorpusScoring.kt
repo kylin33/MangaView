@@ -2,6 +2,8 @@ package com.example.hellocompose.engine.autogen.corpus
 
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.remote.PageParser
+import com.example.hellocompose.data.source.HttpMethod
+import com.example.hellocompose.data.source.SearchRequestBuilder
 import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.engine.autogen.PageFetcher
 import com.example.hellocompose.engine.autogen.SourceAutoGenerator
@@ -23,9 +25,10 @@ enum class Stage(val label: String) {
     COVER("封面提取"),
     CHAPTERS("章节提取"),
     IMAGES("图片地址"),
+    SEARCH("站内搜索"),
     CONFIG("完整配置");
 
-    /** 排序后的前五项是「数据阶段」，最后一项是汇总 */
+    /** CONFIG 之前都是「数据阶段」，最后一项是汇总 */
     val isData: Boolean get() = this != CONFIG
 }
 
@@ -39,13 +42,24 @@ data class StageResult(
     val passed: Boolean,
     val numerator: Int,
     val denominator: Int,
-    val detail: String
+    val detail: String,
+    /**
+     * 这一关对这个样本适不适用。
+     *
+     * 不是每个样本都有搜索页（SPA 的搜索结果由前端渲染，抓不到）。
+     * 不适用的样本不能计入分母 —— 否则「3 个样本声明了搜索、全过」会显示成 3/8，
+     * 看起来像退步，实际只是没人在那几个站上要求搜索。
+     */
+    val applicable: Boolean = true
 ) {
     val accuracy: Double
         get() = if (denominator == 0) 0.0 else numerator.toDouble() / denominator
 
     companion object {
         fun fail(detail: String) = StageResult(false, 0, 1, detail)
+
+        fun notApplicable(detail: String) =
+            StageResult(passed = true, numerator = 0, denominator = 0, detail = detail, applicable = false)
     }
 }
 
@@ -83,7 +97,8 @@ object CorpusScoring {
 
     fun run(site: CorpusSite): SiteRun {
         val steps = mutableListOf<String>()
-        val generator = SourceAutoGenerator(CorpusPageFetcher(site))
+        val fetcher = CorpusPageFetcher(site)
+        val generator = SourceAutoGenerator(fetcher)
         val outcome = runBlocking { generator.generate(site.input) { steps += it } }
 
         if (site.blocked) {
@@ -128,6 +143,7 @@ object CorpusScoring {
         val cover = scoreItems(gold, home.matched, title = false)
         val chapters = scoreChapters(site, config)
         val images = scoreImages(site, config)
+        val search = scoreSearch(site, config, fetcher)
 
         val stages = linkedMapOf(
             Stage.HOME to home.stage,
@@ -136,8 +152,11 @@ object CorpusScoring {
             Stage.CHAPTERS to chapters,
             Stage.IMAGES to images
         )
+        // 搜索单独一列，不并进「完整配置」：这两件事的失败原因完全不同
+        // （搜索没推出来 vs 首页/目录/图片错了），混在一起就分不清该改哪里
         val allPassed = stages.values.all { it.passed }
         val firstFail = stages.entries.firstOrNull { !it.value.passed }
+        stages[Stage.SEARCH] = search
         stages[Stage.CONFIG] = StageResult(
             passed = allPassed,
             numerator = if (allPassed) 1 else 0,
@@ -284,6 +303,49 @@ object CorpusScoring {
         return StageResult(passed, same, gold.size.coerceAtLeast(1), detail)
     }
 
+    // ==================== 站内搜索 ====================
+
+    /**
+     * 用**生成的 search 规则**真的搜一次，看能不能搜出条目。
+     *
+     * 这里不复用识别过程的结果，而是拿产物重新发一次请求：
+     * 判定的是「用户拿着这份配置去搜，能不能出结果」，而不是「识别时探通过没有」。
+     * 两者会不一致 —— 比如识别时把 method 写丢了，POST 变成 GET，识别过程察觉不到。
+     */
+    private fun scoreSearch(
+        site: CorpusSite,
+        config: SourceConfig,
+        fetcher: CorpusPageFetcher
+    ): StageResult {
+        val spec = site.search ?: return StageResult.notApplicable("本样本未声明搜索页，不参与评分")
+        val rule = config.search
+            ?: return StageResult(false, 0, 1, "没有推出搜索规则（这个站点有可用的搜索接口）")
+
+        val request = SearchRequestBuilder.build(rule, spec.keyword, config.baseUrl)
+        val doc = runCatching {
+            when (request.method) {
+                HttpMethod.POST -> fetcher.post(
+                    request.url, request.body, "${config.baseUrl}/", false, false
+                )
+                HttpMethod.GET -> fetcher.get(request.url, "${config.baseUrl}/", false, false)
+            }
+        }.getOrElse { e ->
+            return StageResult(
+                false, 0, 1,
+                "按生成的规则请求失败（${request.method.token.uppercase()} ${request.url}）：${e.message}"
+            )
+        }
+
+        val items = PageParser.list(doc, rule, config.baseUrl)
+        val ok = items.size >= spec.minItems
+        val detail = buildString {
+            append("${request.method.token.uppercase()} ${request.url} → ${items.size} 条")
+            if (!ok) append("，少于声明的 ${spec.minItems} 条")
+            items.firstOrNull()?.let { append("，首条「${it.title}」") }
+        }
+        return StageResult(ok, if (ok) 1 else 0, 1, detail)
+    }
+
     // ==================== 工具 ====================
 
     /** 比对用的地址归一：只去掉末尾斜杠，其他一律不动（查询串是有意义的） */
@@ -302,7 +364,7 @@ object CorpusScoring {
  * 反爬样本（`expected: blocked`）一律返回 403：这类站点的关键行为就是
  * 「不要硬猜一份配置」，所以夹具只需要如实复现「打不开」。
  */
-private class CorpusPageFetcher(private val site: CorpusSite) : PageFetcher {
+internal class CorpusPageFetcher(private val site: CorpusSite) : PageFetcher {
 
     override fun get(
         url: String,

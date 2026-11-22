@@ -5,6 +5,7 @@
   "input": "https://legacy-d.example/",
   "routes": [
     { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/search?keyword=", "page": "search.html" },
     { "match": "prefix:/book/4001/", "page": "reader.html" },
     { "match": "prefix:/book/4002/", "page": "reader.html" },
     { "match": "prefix:/book/4001", "page": "detail_001.html" },
@@ -30,5 +31,6 @@
     "imageAttr": "src",
     "expectedImageCount": 10
   },
+  "search": { "minItems": 3 },
   "notes": "2003 年的模板：整页表格排版、大写标签、字体用 font size、列表是「一行一部作品」的 tr，没有任何语义 class。识别器只能靠「父容器下重复同构子元素」推出来。正文容器只有一个 id=content，底部还有三个 80x110 的友链图。"
 }

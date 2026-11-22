@@ -564,10 +564,14 @@ private fun AutoDetectPanel(
                     color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
                 Text(
-                    text = if (report.searchPath != null) {
-                        "搜索：可用（${report.searchPath}）"
-                    } else {
-                        "搜索：没识别到，需要的话在配置里补 search 节点"
+                    text = when {
+                        report.searchPath == null ->
+                            "搜索：没识别到，需要的话在配置里补 search 节点"
+                        // 搜索规则是「表单推断 / 试出地址 / 探测确认」中的哪一种，
+                        // 决定了它有多可靠：用户看到「表单推断」就知道这是站点自己声明的
+                        report.searchNote != null ->
+                            "搜索：可用（${report.searchPath}）\n${report.searchNote}"
+                        else -> "搜索：可用（${report.searchPath}）"
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer

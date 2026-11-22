@@ -5,6 +5,7 @@
   "input": "https://wp-manga-f.example/",
   "routes": [
     { "match": "exact:/", "page": "home.html" },
+    { "match": "prefix:/?s=", "page": "search.html" },
     { "match": "prefix:/manga/6001/chapter", "page": "reader.html" },
     { "match": "prefix:/manga/6001", "page": "detail_001.html" },
     { "match": "prefix:/manga/6002", "page": "detail_002.html" }
@@ -29,5 +30,6 @@
     "imageAttr": "data-src",
     "expectedImageCount": 20
   },
+  "search": { "minItems": 3 },
   "notes": "Madara 主题的标准结构：列表项带 4 层包裹（row/c-tabs-item__content/tab-thumb/post-title），目录是 li.wp-manga-chapter，正文图被懒加载插件换成 blank.gif + data-src。这类模板在中文漫画站里占比很高，选择器认对了就一次通吃。"
 }

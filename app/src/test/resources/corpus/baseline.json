@@ -19,6 +19,12 @@
       "passed": 8,
       "denominator": 128
     },
+    "SEARCH": {
+      "hits": 3,
+      "total": 3,
+      "passed": 3,
+      "denominator": 3
+    },
     "TITLE": {
       "hits": 142,
       "total": 8,

@@ -6,7 +6,13 @@
     <title>WP漫画模板站 - Madara 主题演示</title>
 </head>
 <body class="wp-manga">
-<header class="site-header"><a href="/">WP漫画模板站</a></header>
+<header class="site-header"><a href="/">WP漫画模板站</a>
+    <!-- Madara 主题的搜索表单：WordPress 的关键字参数固定是 s -->
+    <form role="search" method="get" class="search-form" action="/">
+        <label><input type="search" class="search-field" placeholder="搜索漫画…" name="s"></label>
+        <button type="submit" class="search-submit">搜索</button>
+    </form>
+</header>
 
 <main class="site-content">
     <!-- 干扰：首屏轮播，6 个 slider-item，结构比列表更「干净」 -->

@@ -212,4 +212,48 @@ class ImageUrlResolverTest {
             UrlResolver.resolve("//cdn.example/1.jpg", "https://site.example")
         )
     }
+
+    // ==================== 冷门懒加载属性 ====================
+
+    @Test
+    fun recognizesAloadAttribute() {
+        // data-aload 是腾讯/新浪系模板常见的写法，早期属性表里没有它，
+        // 这类站的封面会全部取到占位的 src
+        val el = element("""<img src="/img/loading.gif" data-aload="/upload/9.jpg">""")
+        val best = ImageUrlResolver.best(el)!!
+
+        assertEquals("data-aload", best.attr)
+        assertEquals("/upload/9.jpg", best.raw)
+    }
+
+    @Test
+    fun recognizesKsLazyloadAttribute() {
+        val el = element("""<img src="/img/pixel.gif" data-ks-lazyload="/upload/8.jpg">""")
+        assertEquals("data-ks-lazyload", ImageUrlResolver.best(el)!!.attr)
+    }
+
+    @Test
+    fun recognizesBackgroundShorthand() {
+        // 简写属性 `background:url(...)` 不带 -image 后缀，
+        // 只匹配 background-image 的写法会漏掉它
+        val el = element("""<a href="/b/1" style="background: #fff url('/upload/7.webp') no-repeat"></a>""")
+        val best = ImageUrlResolver.best(el)!!
+
+        assertEquals("/upload/7.webp", best.raw)
+    }
+
+    @Test
+    fun tinyDeclaredSizeDemotesSrc() {
+        // 1×1 埋点与 40×40 图标：能解码、但不是封面。同元素上还有真实地址时降权
+        val el = element("""<img src="/upload/real.jpg" data-original="/upload/better.jpg" width="1" height="1">""")
+        assertEquals("data-original", ImageUrlResolver.best(el)!!.attr)
+    }
+
+    @Test
+    fun pixelPlaceholderIsRecognized() {
+        listOf("/img/px.gif", "/img/1.gif", "/img/spacer.png", "/img/default.jpg").forEach {
+            assertTrue("应判为占位图：$it", ImageUrlResolver.isPlaceholder(it))
+        }
+        assertFalse("不应判为占位图：/upload/202610/cover.jpg", ImageUrlResolver.isPlaceholder("/upload/202610/cover.jpg"))
+    }
 }

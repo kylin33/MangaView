@@ -79,7 +79,7 @@ class AutoGeneratorFixtureTest(private val site: FixtureSite) {
         val reparsed = SourceParser.parse(result.json, config.id)
         assertEquals("生成的 JSON 回读后 baseUrl 变了", config.baseUrl, reparsed.baseUrl)
 
-        assertSearch(config)
+        assertSearch(config, result.json)
         assertWarnings(result)
 
         // ---- 回放：用生成的配置再抓一遍同样的 HTML ----
@@ -178,7 +178,10 @@ class AutoGeneratorFixtureTest(private val site: FixtureSite) {
         }
     }
 
-    private fun assertSearch(config: com.example.hellocompose.data.source.SourceConfig) {
+    private fun assertSearch(
+        config: com.example.hellocompose.data.source.SourceConfig,
+        json: String
+    ) {
         if (!site.expect.expectsSearchPath) return
         val expected = site.expect.searchPath
         if (expected == null) {
@@ -188,6 +191,40 @@ class AutoGeneratorFixtureTest(private val site: FixtureSite) {
             )
         } else {
             assertEquals("搜索地址推断错误", expected, config.search?.path)
+            site.expect.searchMethod?.let { method ->
+                assertEquals(
+                    "搜索提交方式不对（表单 method 应原样落到配置里）",
+                    method,
+                    config.search?.method?.token
+                )
+            }
+            site.expect.searchKeywordParam?.let { param ->
+                // 参数名有两种落法：关键字写在 path 里就是 `wd={keyword}`，
+                // 写在请求体里才需要 keywordParam。两者都算「带出来了」
+                val search = config.search
+                val inPath = search?.path?.contains("$param=") == true
+                assertTrue(
+                    "关键字参数名 $param 没写进规则（path=${search?.path}，keywordParam=${search?.keywordParam}）",
+                    inPath || search?.keywordParam == param
+                )
+            }
+            if (site.expect.searchFields.isNotEmpty()) {
+                assertEquals(
+                    "表单隐藏域没带进配置（少一个参数站点就会跳回首页）",
+                    site.expect.searchFields,
+                    config.search?.fields
+                )
+            }
+            // 生成的 JSON 必须能被正式解析器读回同样的搜索形态，
+            // 否则用户保存之后 POST 会退化成 GET（这类错误只在运行时才暴露）
+            val reparsed = SourceParser.parse(json, config.id)
+            assertEquals("回读后搜索地址变了", config.search?.path, reparsed.search?.path)
+            assertEquals("回读后提交方式变了", config.search?.method, reparsed.search?.method)
+            // keywordParam 只在 path 没有 {keyword} 时才需要写进 JSON，其余情况不参与回读比较
+            if (config.search?.path?.contains("{keyword}") != true) {
+                assertEquals("回读后参数名变了", config.search?.keywordParam, reparsed.search?.keywordParam)
+            }
+            assertEquals("回读后固定参数变了", config.search?.fields, reparsed.search?.fields)
         }
     }
 

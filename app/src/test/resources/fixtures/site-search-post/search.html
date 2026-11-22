@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>搜索 - 测试漫画站</title>
+</head>
+<body>
+<header class="header"><nav class="nav"><a href="/">首页</a></nav></header>
+
+<main>
+    <h1 class="search-title">搜索：{{keyword}}</h1>
+    <!-- 搜索结果沿用首页那套列表结构，识别时应当复用已验证的首页规则 -->
+    <div class="book-list">
+        <div class="item">
+            <a class="thumb" href="/comic/{{keyword}}"><img data-src="/uploads/cover/{{keyword}}.jpg" alt="{{keyword}}"></a>
+            <h3><a href="/comic/{{keyword}}">{{keyword}}</a></h3>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/{{keyword}}-2"><img data-src="/uploads/cover/{{keyword}}-2.jpg" alt="{{keyword}} 第二季"></a>
+            <h3><a href="/comic/{{keyword}}-2">{{keyword}} 第二季</a></h3>
+        </div>
+        <div class="item">
+            <a class="thumb" href="/comic/{{keyword}}-3"><img data-src="/uploads/cover/{{keyword}}-3.jpg" alt="{{keyword}} 外传"></a>
+            <h3><a href="/comic/{{keyword}}-3">{{keyword}} 外传</a></h3>
+        </div>
+    </div>
+</main>
+</body>
+</html>

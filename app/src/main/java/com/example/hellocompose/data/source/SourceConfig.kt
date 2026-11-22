@@ -77,7 +77,28 @@ data class ListRule(
     val cover: FieldRule = FieldRule(select = "", attr = "data-original|src"),
     val title: FieldRule = FieldRule(select = "", attr = "alt"),
     /** 非空时优先走脚本取数，DOM 规则只作兜底 */
-    val script: ScriptRule? = null
+    val script: ScriptRule? = null,
+    /**
+     * 搜索请求的提交方式。首页列表永远是 GET，所以只有 search 节点会用到 POST。
+     *
+     * 站内搜索用 POST 的站点不算多但确实存在（表单里有隐藏域、关键字不能出现在地址栏里），
+     * 以前一律按 GET 发，这类站就只能被写成「没有搜索」。
+     */
+    val method: HttpMethod = HttpMethod.GET,
+    /**
+     * 关键字参数名。表单里那个 `<input name="wd">` 的 name 就是它。
+     *
+     * 只有当 [path] 里没有 `{keyword}` 占位符时才用得上：那时关键字要作为
+     * 独立参数拼进去（GET 拼查询串，POST 放请求体）。
+     */
+    val keywordParam: String = SearchRequestBuilder.DEFAULT_KEYWORD_PARAM,
+    /**
+     * 表单里的隐藏域等固定参数，形如 `{"m": "search", "a": "init"}`。
+     *
+     * 苹果CMS 一类的站搜索地址是 `/index.php?m=search&a=init&wd=关键字`，
+     * 少一个隐藏域就直接被重定向回首页 —— 只记 `path` 是表达不出来这种规则的。
+     */
+    val fields: Map<String, String> = emptyMap()
 )
 
 /** 详情页：拿到章节列表 */

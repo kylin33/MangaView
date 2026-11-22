@@ -1,11 +1,22 @@
 package com.example.hellocompose.data.image
 
+import android.app.ActivityManager
 import android.content.Context
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import kotlinx.coroutines.Dispatchers
 import java.io.File
+
+/**
+ * 本机的图片解码档位。面板要显示「为什么是两路」，所以把判断依据一起带出来。
+ */
+data class ImageDeviceProfile(
+    val memoryClassMb: Int,
+    val isLowRamDevice: Boolean,
+    val concurrency: Int,
+    val reason: String
+)
 
 /**
  * 全局唯一的图片加载器。
@@ -16,7 +27,8 @@ import java.io.File
  *
  * - **内存缓存按堆比例**：写死 32MB 在 128MB 堆的低端机上仍然是灾难，
  *   在 512MB 堆的旗舰机上又太小；
- * - **解码并发上限**：真正吃内存的是「同时解几张」，而不是「一共解过几张」；
+ * - **解码并发上限**：真正吃内存的是「同时解几张」，而不是「一共解过几张」，
+ *   具体几路由 [ImageConcurrency] 按设备堆上限决定；
  * - **ARGB_8888 + 不用 RGB_565**：韩漫大量渐变和细文字，565 的色带肉眼可见，
  *   省下的内存用采样和缓存上限去抠，不从这里抠。
  *
@@ -25,22 +37,29 @@ import java.io.File
  */
 object MangaImageLoader {
 
-    /**
-     * 同时解码的图片数。
-     *
-     * 一张 1080×2700 的页图约 11MB，2 路并发意味着峰值约 22MB（加上缩放前的
-     * 中间位图会更高），再往上加基本只会更快地 OOM，不会更快地看到图。
-     */
-    const val MAX_CONCURRENT_DECODES = 2
-
     /** 内存缓存占堆上限的比例 */
     const val MEMORY_CACHE_PERCENT = 0.18
 
     /** 磁盘缓存上限：长图单张几百 KB，256MB 够存十几话 */
     const val DISK_CACHE_BYTES = 256L * 1024 * 1024
 
+    /** 读取设备信息，决定解码并发。没申请任何权限，也不需要 Context 常驻 */
+    fun deviceProfile(context: Context): ImageDeviceProfile {
+        val am = context.applicationContext
+            .getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memoryClass = am.memoryClass
+        val lowRam = am.isLowRamDevice
+        return ImageDeviceProfile(
+            memoryClassMb = memoryClass,
+            isLowRamDevice = lowRam,
+            concurrency = ImageConcurrency.recommend(memoryClass, lowRam),
+            reason = ImageConcurrency.reason(memoryClass, lowRam)
+        )
+    }
+
     fun create(context: Context): ImageLoader {
         val app = context.applicationContext
+        val parallel = deviceProfile(app).concurrency
 
         return ImageLoader.Builder(app)
             .memoryCache {
@@ -65,8 +84,8 @@ object MangaImageLoader {
             // 很多图床对图片返回 no-cache，照做等于每次滚动都重新下载
             .respectCacheHeaders(false)
             // 双重闸门：BitmapFactory 内部信号量 + 解码协程调度器的并行度
-            .bitmapFactoryMaxParallelism(MAX_CONCURRENT_DECODES)
-            .decoderDispatcher(Dispatchers.IO.limitedParallelism(MAX_CONCURRENT_DECODES))
+            .bitmapFactoryMaxParallelism(parallel)
+            .decoderDispatcher(Dispatchers.IO.limitedParallelism(parallel))
             .build()
     }
 }

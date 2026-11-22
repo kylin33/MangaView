@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -56,7 +57,8 @@ fun SourceDrawer(
     onEditSource: (SourceConfig) -> Unit,
     onDeleteSource: (SourceConfig) -> Unit,
     onShareSource: (SourceConfig) -> Unit,
-    onPreloadClick: () -> Unit
+    onPreloadClick: () -> Unit,
+    onStatsClick: () -> Unit
 ) {
     ModalDrawerSheet {
         Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
@@ -152,6 +154,16 @@ fun SourceDrawer(
                             style = MaterialTheme.typography.labelMedium
                         )
                     },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
+            }
+
+            item {
+                NavigationDrawerItem(
+                    label = { Text("图片加载统计") },
+                    selected = false,
+                    onClick = onStatsClick,
+                    icon = { Icon(Icons.Default.Info, contentDescription = null) },
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                 )
             }
