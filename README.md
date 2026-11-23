@@ -164,7 +164,7 @@ MangaView 反过来做：**不内置任何站点**。程序在运行时去读站
 
 ```bash
 ./gradlew :app:assembleDebug      # 产物 app/build/outputs/apk/debug/app-debug.apk（约 15MB）
-./gradlew :app:testDebugUnitTest  # 216 个单元测试，默认不联网
+./gradlew :app:testDebugUnitTest  # 234 个单元测试，默认不联网
 ```
 
 需要 JDK 17 以上与 Android SDK 37；minSdk 24，Android 7.0 起能装。
@@ -183,7 +183,7 @@ MangaView 反过来做：**不内置任何站点**。程序在运行时去读站
 | 存储 | DataStore Preferences 存设置与历史，站点配置是 `filesDir/sources/*.json` |
 | 识别 | 纯 JVM 启发式，无 Android 依赖，能在单测里离线跑完整流程 |
 | 构建 | AGP 9.5 / Kotlin 2.4.21 / Gradle 9.8.2，手写依赖容器，无 DI 框架 |
-| 测试 | 187 个单测 · 14 组离线夹具 · 9 组带标准答案的语料 |
+| 测试 | 234 个单测 · 19 组离线夹具 · 9 组带标准答案的语料 |
 
 三个引擎（源适配 / 阅读 / 自动识别）的边界、图片链路的取舍、连接安全的判定表，
 都在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

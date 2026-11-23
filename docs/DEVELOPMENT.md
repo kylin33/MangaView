@@ -14,7 +14,7 @@
 ```bash
 ./gradlew :app:assembleDebug       # 产物 app/build/outputs/apk/debug/app-debug.apk（约 15MB）
 ./gradlew :app:assembleRelease     # 未签名的 release 包（当前未接 signingConfig，也没开 minify）
-./gradlew :app:testDebugUnitTest   # 187 个单元测试，默认不联网
+./gradlew :app:testDebugUnitTest   # 234 个单元测试，默认不联网
 ```
 
 ## 工具链的坑
@@ -34,7 +34,7 @@
 
 | 层 | 回答的问题 | 数量 | 联网 |
 | --- | --- | --- | --- |
-| 单元测试 | 纯函数与引擎逻辑对不对 | 187 | 否 |
+| 单元测试 | 纯函数与引擎逻辑对不对 | 234 | 否 |
 | 实连测试 | 识别结果拿去做正式抓取真能用吗 | 1（按需） | 是 |
 | 回归夹具 `fixtures/` | 这类结构还认得出来吗 | 14 组 | 否 |
 | 准确率语料 `corpus/` | 有多准，哪一关退化 | 9 组 | 否 |

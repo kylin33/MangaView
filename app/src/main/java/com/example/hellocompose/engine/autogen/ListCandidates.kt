@@ -181,7 +181,14 @@ internal object ListCandidates {
         for (candidate in candidates) {
             val like = candidate.chapterLike ?: continue
             if (like < 0.5) continue
-            val key = candidate.itemSelector.substringAfterLast('>').trim()
+            // 分组键是「条目长什么样」，不是「在哪个容器里」。
+            // 选择器可能写成 `#list-1 > li.chapter`，也可能写成 `.chapter-list li.chapter`
+            // 或 `li.chapter`（唯一命中时最短的那种），三种都要归到同一组
+            val key = candidate.itemSelector
+                .replace(">", " ")
+                .trim()
+                .substringAfterLast(' ')
+                .trim()
             if (key.isEmpty()) continue
             groups.getOrPut(key) { mutableListOf() } += candidate
         }

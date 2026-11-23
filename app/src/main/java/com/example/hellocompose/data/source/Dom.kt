@@ -64,17 +64,31 @@ internal object Dom {
     fun isSafeClass(name: String): Boolean = SAFE_CLASS.matches(name)
 
     /**
-     * 容器选择器。优先用 id/class，实在没有就往上找两代祖先拼成后代选择器。
-     * 都找不到时退化成标签名（调用方会用实际匹配数量来兜底，过宽会被筛掉）。
+     * 容器选择器：id 优先，其次**一个**稳定的 class，再往上两代找锚点。
+     *
+     * 以前这里会把元素上最多三个 class 全拼进去（`div.list.hot.news`），
+     * 看着精确，实际站方多挂一个 `is-dark` 这种主题类就失配 ——
+     * 而「多挂一个 class」比「改 id」常见得多。
+     * 具体拼哪条最终由 [SelectorSynth] 用真实查询验证，这里只给兜底写法。
      */
     fun containerSelector(el: Element): String? {
-        selfSelector(el)?.let { return it }
-
-        var cur = el.parent()
+        var cur: Element? = el
         var depth = 0
-        while (cur != null && depth < 2) {
-            val selector = selfSelector(cur)
-            if (selector != null) return "$selector ${el.tagName()}"
+        while (cur != null && depth <= 2) {
+            val id = cur.id()
+            if (id.isNotBlank() && SAFE_ID.matches(id)) return "#$id"
+
+            val cls = cur.classNames()
+                .filter { SAFE_CLASS.matches(it) }
+                .maxByOrNull { SelectorSynth.classRank(it) }
+                // 只剩状态类/布局类时，拿它当范围比不写还糟，继续往上找
+            if (cls != null && SelectorSynth.classRank(cls) >= 0) {
+                return if (cur === el) {
+                    "${el.tagName()}.$cls"
+                } else {
+                    "${cur.tagName()}.$cls ${el.tagName()}"
+                }
+            }
             cur = cur.parent()
             depth++
         }
@@ -105,6 +119,9 @@ internal object Dom {
      */
     fun blocks(doc: Document, minSize: Int): List<Block> {
         val out = ArrayList<Block>()
+        // 同一页里大量容器会尝试同样的候选选择器，缓存一次查询结果能省掉绝大部分遍历
+        val cache = HashMap<String, List<Element>>()
+        fun lookup(selector: String): List<Element> = cache.getOrPut(selector) { doc.select(selector) }
 
         for (container in doc.allElements) {
             if (container.tagName() in SKIP_TAGS) continue
@@ -123,19 +140,31 @@ internal object Dom {
                     .sorted()
                     .take(2)
 
-                val variants = LinkedHashSet<String>()
-                variants += tag + common.joinToString("") { ".$it" }
-
+                // 两种 class 取法都试：条目 class 里常夹着 first/last/odd 这类可变量，
+                // 只取交集会退化，只取单个 class 又可能太窄
+                val classSets = LinkedHashSet<List<String>>()
+                if (common.isNotEmpty()) classSets.add(common)
                 members.flatMap { it.classNames() }
                     .filter { SAFE_CLASS.matches(it) }
                     .groupingBy { it }
                     .eachCount()
                     .maxByOrNull { it.value }
                     ?.key
-                    ?.let { variants += "$tag.$it" }
+                    ?.let { classSets.add(listOf(it)) }
+                if (classSets.isEmpty()) classSets.add(emptyList())
 
-                for (variant in variants) {
-                    out += Block("$containerSelector > $variant", container, members)
+                val seen = HashSet<String>()
+                for (classes in classSets) {
+                    val fallback = "$containerSelector > $tag" + classes.joinToString("") { ".$it" }
+                    val selector = SelectorSynth.item(
+                        container = container,
+                        members = members,
+                        tag = tag,
+                        requiredClasses = classes,
+                        fallback = fallback,
+                        lookup = ::lookup
+                    )
+                    if (seen.add(selector)) out += Block(selector, container, members)
                 }
             }
         }

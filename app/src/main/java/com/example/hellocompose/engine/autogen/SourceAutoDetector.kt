@@ -11,6 +11,7 @@ import com.example.hellocompose.data.source.ListRule
 import com.example.hellocompose.data.source.ReaderRule
 import com.example.hellocompose.data.source.ScriptData
 import com.example.hellocompose.data.source.ScriptRule
+import com.example.hellocompose.data.source.SelectorSynth
 import com.example.hellocompose.data.source.TitleNormalizer
 import com.example.hellocompose.data.source.pickByRule
 import com.example.hellocompose.data.source.readByRule
@@ -247,6 +248,9 @@ object SourceAutoDetector {
 
         val seen = HashSet<String>()
         val out = ArrayList<ReaderGuess>()
+        // 候选选择器会反复出现在不同分组里，查询结果按选择器缓一份
+        val cache = HashMap<String, List<Element>>()
+        fun lookup(selector: String): List<Element> = cache.getOrPut(selector) { doc.select(selector) }
 
         for ((_, members) in groups) {
             val parent = members.first().parent() ?: continue
@@ -260,7 +264,19 @@ object SourceAutoDetector {
             // 有些站整页用背景图分页（<div class="page" style="background-image:url(...)">），
             // 页面里一张 img 都没有，只试 img 的话正文图恒为空
             val carrierSelectors = members.mapNotNull { Dom.selfSelector(it) }.distinct().take(2)
-            for (itemSelector in listOf("$parentSelector > img", "$parentSelector img") + carrierSelectors) {
+            // 正文图的选择器同样走「最短且唯一」：`#content > img` 比
+            // `div.main.wrap #content img` 耐改版得多，站方换一层包裹也不会失效
+            val synthesized = SelectorSynth
+                .item(parent, members, "img", emptyList(), "$parentSelector > img", ::lookup)
+                // 裸 `img` 会连封面、广告、友链图一起框进来，宁可退回原来的带范围写法
+                .takeIf { it != "img" }
+            val itemSelectors = LinkedHashSet<String>().apply {
+                synthesized?.let { add(it) }
+                add("$parentSelector > img")
+                add("$parentSelector img")
+                addAll(carrierSelectors)
+            }
+            for (itemSelector in itemSelectors) {
                 if (!seen.add(itemSelector)) continue
                 val rule = ReaderRule(
                     item = itemSelector,

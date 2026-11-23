@@ -139,6 +139,74 @@ object SearchFormScanner {
         return seen.entries.sortedByDescending { it.value }.map { it.key }
     }
 
+    /** 脚本里出现的、被引号包起来的片段 */
+    private val QUOTED = Regex("""["']([^"']{1,120})["']""")
+
+    /** 静态资源后缀：脚本里引号包起来的东西大多是这些，不是接口 */
+    private val ASSET = Regex(""".(js|css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|mp4)(\?|$)""", RegexOption.IGNORE_CASE)
+
+    /** 片段里要带这些痕迹才可能是搜索入口 */
+    private val SCRIPT_PATH_HINT = Regex("search|sousuo|/so/|/ss|/s\\?|find|query", RegexOption.IGNORE_CASE)
+
+    /**
+     * 从内联脚本里找「站点自己拼出来的搜索地址」。
+     *
+     * 表单探测只能读到 `<form action=...>`。SPA 和一部分模板根本没有 form：
+     * 提交逻辑写成 `location.href = '/ss?wd=' + input.value`，地址只存在于 JS 字符串里。
+     * 这类站点以前只能靠猜常见模板，猜不中就判成「没有搜索」。
+     *
+     * 只取「像搜索」的短路径，不取整段脚本：候选每多一条都是一次真实请求，
+     * 猜错的代价不只是时间，还可能触发站点限流。
+     */
+    /** 脚本里一条搜索线索：地址和它带的参数名 */
+    data class ScriptHint(val path: String, val param: String?)
+
+    fun scriptPaths(doc: Document): List<String> = scriptHints(doc).map { it.path }
+
+    fun scriptPaths(script: String): List<String> = scriptHints(script).map { it.path }
+
+    fun scriptHints(doc: Document): List<ScriptHint> = hintsIn(
+        doc.select("script:not([src])").joinToString("\n") { it.data() }
+    )
+
+    /** 同一套规则也用于站点的独立脚本文件（`/static/js/app.js` 这类） */
+    fun scriptHints(script: String): List<ScriptHint> = hintsIn(script)
+
+    private fun hintsIn(raw: String): List<ScriptHint> {
+        // 只截前 200KB：脚本里真正的入口逻辑通常在最前面，
+        // 而打包后的第三方库会把整页撑到几 MB，读完只是浪费内存
+        val text = raw.take(200_000)
+        if (text.isBlank()) return emptyList()
+
+        val out = LinkedHashSet<ScriptHint>()
+        for (match in QUOTED.findAll(text)) {
+            if (out.size >= 6) break
+            val raw = match.groupValues[1].trim()
+            if (raw.isEmpty() || raw.length > 80) continue
+            if (raw.startsWith("#") || raw.startsWith(".") || raw.startsWith("http")) continue
+            if (ASSET.containsMatchIn(raw)) continue
+            if (!SCRIPT_PATH_HINT.containsMatchIn(raw)) continue
+
+            // 关键字之前的部分才是路径：`/ss?wd=`、`/search/{kw}`、`/search?q=`
+            val head = raw.substringBefore("{").substringBefore('+')
+            val param = Regex("[?&]([A-Za-z_][A-Za-z0-9_]{0,20})=").find(head)?.groupValues?.get(1)
+            val path = raw.substringBefore('?')
+                .substringBefore("{")
+                .substringBefore('+')
+                .substringBefore('#')
+                .trim()
+                .trimEnd('/')
+            if (path.isEmpty() || path == "/") continue
+            if (NOT_SEARCH_ACTION.containsMatchIn(path)) continue
+            out += ScriptHint(
+                path = if (path.startsWith("/")) path else "/$path",
+                // 脚本自己写的参数名比页面输入框的 name 可信：前者是真正发出去的参数
+                param = param?.takeIf { !NOT_SEARCH_INPUT.containsMatchIn(it) }
+            )
+        }
+        return out.toList()
+    }
+
     private fun read(form: Element, pageUrl: String): SearchForm? {
         val action = form.attr("action").trim()
         if (action.startsWith("javascript:", ignoreCase = true)) return null

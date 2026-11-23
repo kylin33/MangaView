@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta property="og:site_name" content="测试漫画站">
+    <title>测试漫画站 - 在线漫画</title>
+</head>
+<body>
+<header class="header">
+    <nav class="nav">
+        <a href="/">首页</a><a href="/rank">排行榜</a><a href="/update">最近更新</a><a href="/search">搜索</a>
+    </nav>
+
+    <!-- 没有 form：提交逻辑写在 JS 里，参数名只能从 DOM 里读 -->
+    <!-- 只有一个输入框和一个按钮，地址拼在脚本里，DOM 里查不到 action -->
+    <div class="top-search">
+        <input id="q" name="wd" type="text" placeholder="搜索漫画">
+        <button id="go">搜索</button>
+        <script src="/static/js/app.js?v=1"></script>
+    </div>
+</header>
+
+<main>
+    <section class="section">
+        <h2 class="section-title">最新更新</h2>
+        <div class="book-list">
+            <div class="item">
+                <a class="thumb" href="/comic/101"><img data-src="/uploads/cover/101.jpg" alt="夜色霓虹"></a>
+                <h3><a href="/comic/101">夜色霓虹</a></h3>
+                <p class="meta">第 12 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/102"><img data-src="/uploads/cover/102.jpg" alt="第二人生"></a>
+                <h3><a href="/comic/102">第二人生</a></h3>
+                <p class="meta">第 8 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/103"><img data-src="/uploads/cover/103.jpg" alt="荆棘之城"></a>
+                <h3><a href="/comic/103">荆棘之城</a></h3>
+                <p class="meta">第 30 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/104"><img data-src="/uploads/cover/104.jpg" alt="午夜书店"></a>
+                <h3><a href="/comic/104">午夜书店</a></h3>
+                <p class="meta">第 5 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/105"><img data-src="/uploads/cover/105.jpg" alt="南方来信"></a>
+                <h3><a href="/comic/105">南方来信</a></h3>
+                <p class="meta">第 21 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/106"><img data-src="/uploads/cover/106.jpg" alt="海边的房间"></a>
+                <h3><a href="/comic/106">海边的房间</a></h3>
+                <p class="meta">第 17 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/107"><img data-src="/uploads/cover/107.jpg" alt="旧日回声"></a>
+                <h3><a href="/comic/107">旧日回声</a></h3>
+                <p class="meta">第 3 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/108"><img data-src="/uploads/cover/108.jpg" alt="镜中人"></a>
+                <h3><a href="/comic/108">镜中人</a></h3>
+                <p class="meta">第 26 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/109"><img data-src="/uploads/cover/109.jpg" alt="雨夜列车"></a>
+                <h3><a href="/comic/109">雨夜列车</a></h3>
+                <p class="meta">第 9 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/110"><img data-src="/uploads/cover/110.jpg" alt="无声告白"></a>
+                <h3><a href="/comic/110">无声告白</a></h3>
+                <p class="meta">第 14 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/111"><img data-src="/uploads/cover/111.jpg" alt="灰塔"></a>
+                <h3><a href="/comic/111">灰塔</a></h3>
+                <p class="meta">第 2 话</p>
+            </div>
+            <div class="item">
+                <a class="thumb" href="/comic/112"><img data-src="/uploads/cover/112.jpg" alt="长夜将尽"></a>
+                <h3><a href="/comic/112">长夜将尽</a></h3>
+                <p class="meta">第 40 话</p>
+            </div>
+        </div>
+    </section>
+</main>
+
+<footer class="footer">
+    <p>本页数据为测试夹具，与任何真实站点无关。</p>
+</footer>
+</body>
+</html>

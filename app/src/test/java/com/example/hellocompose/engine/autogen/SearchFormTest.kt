@@ -226,4 +226,92 @@ class SearchFormTest {
         assertEquals("/search?wd={keyword}", rule.path)
         assertEquals(".book-list .item", rule.item)
     }
+
+    // ==================== 脚本里的搜索地址 ====================
+
+    @Test
+    fun scriptPathsFindsLocationHref() {
+        val paths = SearchFormScanner.scriptPaths(
+            page(
+                """
+                <script>
+                  document.getElementById('go').onclick = function () {
+                    location.href = '/ss?wd=' + encodeURIComponent(document.getElementById('q').value);
+                  };
+                </script>
+                """
+            )
+        )
+        // 关键字之前的那段才是路径；`?wd=` 是参数，不属于路径
+        assertEquals(listOf("/ss"), paths)
+    }
+
+    @Test
+    fun scriptPathsHandlesAbsoluteAndRelative() {
+        val paths = SearchFormScanner.scriptPaths(
+            page(
+                """
+                <script>
+                  var a = '/search?keyword=';
+                  var b = 'search.php?wd=';
+                </script>
+                """
+            )
+        )
+        assertTrue("绝对路径丢了：$paths", paths.contains("/search"))
+        assertTrue("相对路径没补前导斜杠：$paths", paths.contains("/search.php"))
+    }
+
+    @Test
+    fun scriptPathsSkipsAssetsAndUnrelated() {
+        val paths = SearchFormScanner.scriptPaths(
+            page(
+                """
+                <script>
+                  var css = '/static/search.css';
+                  var js = '/static/js/search.js?v=3';
+                  var api = 'https://other.example/search?q=';
+                  var login = '/user/login?redirect=';
+                  var fancy = '/search-box';
+                </script>
+                """
+            )
+        )
+        assertTrue("静态资源被当成了搜索地址：$paths", paths.none { it.endsWith(".css") || it.endsWith(".js") })
+        assertTrue("外站地址不该收：$paths", paths.none { it.contains("other.example") })
+        assertTrue("登录地址不该收：$paths", paths.none { it.contains("login") })
+    }
+
+    @Test
+    fun scriptPathsIgnoresNoScriptPage() {
+        assertTrue(SearchFormScanner.scriptPaths(page("<nav>首页</nav>")).isEmpty())
+    }
+
+    @Test
+    fun scriptHintCarriesParameterName() {
+        // 脚本自己拼接的参数名才是真正发出去的；页面输入框的 name 经常和它对不上
+        val hints = SearchFormScanner.scriptHints(
+            page("""<script>window.location.href = '/ss2?kw=' + q.value;</script>""")
+        )
+        assertEquals(listOf("/ss2"), hints.map { it.path })
+        assertEquals(listOf("kw"), hints.map { it.param })
+    }
+
+    @Test
+    fun scriptHintWithoutParameterHasNullParam() {
+        val hints = SearchFormScanner.scriptHints(
+            page("""<script>location.href = '/search/' + encodeURIComponent(q);</script>""")
+        )
+        assertEquals(listOf("/search"), hints.map { it.path })
+        assertEquals(listOf<String?>(null), hints.map { it.param })
+    }
+
+    @Test
+    fun scriptHintSkipsPasswordLikeParams() {
+        val hints = SearchFormScanner.scriptHints(
+            page("""<script>location.href = '/search?password=' + p;</script>""")
+        )
+        // 地址本身像搜索，但参数名是密码域同名 —— 不能被当成搜索参数
+        assertEquals(listOf<String?>(null), hints.map { it.param })
+    }
 }

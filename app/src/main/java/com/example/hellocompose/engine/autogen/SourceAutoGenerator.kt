@@ -7,6 +7,7 @@ import com.example.hellocompose.core.toAppError
 import com.example.hellocompose.data.model.Manga
 import com.example.hellocompose.data.remote.JsoupHttpClient
 import com.example.hellocompose.data.remote.PageParser
+import com.example.hellocompose.data.remote.UrlResolver
 import com.example.hellocompose.data.remote.TlsException
 import com.example.hellocompose.data.remote.TlsProblem
 import com.example.hellocompose.data.source.DetailRule
@@ -17,6 +18,7 @@ import com.example.hellocompose.data.source.ListRule
 import com.example.hellocompose.data.source.ReaderRule
 import com.example.hellocompose.data.source.ScriptData
 import com.example.hellocompose.data.source.SearchRequestBuilder
+import com.example.hellocompose.data.source.SelectorSynth
 import com.example.hellocompose.data.source.SourceConfig
 import com.example.hellocompose.data.source.SourceJson
 import com.example.hellocompose.data.source.SourceParser
@@ -364,8 +366,17 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         val capabilities = mergeCapabilities(homeCaps, chapterGuess, readerGuess)
         // 能力层面的弱项要说给用户听：它们不影响「能不能用」，但决定「好不好用」。
         // 比如书名只能读可见文字，某些条目就会带上更新时间
-        val allWarnings = (warnings + capabilities?.weakPoints.orEmpty()).distinct()
+        // 脆弱选择器在**还能用的时候**就要说：等站点改版失效了，用户只会看到「突然抓不到」，
+        // 根本不会想到是选择器依赖了元素位置或叠了太多 class
         val withConfidence = config.copy(confidence = confidence.toSourceConfidence())
+        val selectorWarnings = listOf(
+            "首页" to withConfidence.home.item,
+            "目录" to withConfidence.detail.item,
+            "图片" to withConfidence.reader.item
+        ).mapNotNull { (label, selector) ->
+            SelectorSynth.fragility(selector)?.let { "${label}选择器$it（当前：$selector）" }
+        }
+        val allWarnings = (warnings + selectorWarnings + capabilities?.weakPoints.orEmpty()).distinct()
 
         val json = SourceJson.encode(withConfidence)
         SourceParser.parse(json, withConfidence.id)
@@ -503,6 +514,7 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         // 这里没有首页列表规则可用，表单只提供「请求形态」，选择器留给 searchResultOf 现探
         val placeholder = ListRule(path = "/", item = "")
         val candidates = formCandidates(SearchFormScanner.scan(homeDoc, pageUrl, baseUrl), placeholder) +
+            scriptCandidates(placeholder, homeDoc, pageUrl, policy, onStep) +
             templateCandidates(placeholder) +
             paramCandidates(placeholder, homeDoc)
 
@@ -615,6 +627,63 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         SEARCH_PATHS.map { path ->
             SearchCandidate(homeRule.copy(path = path), path)
         }
+
+    /**
+     * 脚本线索候选：地址只写在 JS 里（SPA、无 form 模板）时唯一的线索来源。
+     *
+     * 排在模板表之前 —— 站点自己脚本里出现的路径，比「常见搜索地址」可信得多。
+     * 参数名优先用页面上真实出现过的，没有才退回 `keyword`。
+     */
+    private fun scriptCandidates(
+        homeRule: ListRule,
+        homeDoc: Document,
+        pageUrl: String,
+        policy: InsecurePolicy,
+        onStep: (String) -> Unit
+    ): List<SearchCandidate> {
+        var hints = SearchFormScanner.scriptHints(homeDoc)
+        if (hints.isEmpty()) {
+            // 内联脚本里没有，就去站点的独立 JS 里找：SPA 的搜索逻辑基本都在
+            // `/static/js/*.js` 里，页面本身只剩一个空容器和一个输入框
+            val sources = homeDoc.select("script[src]")
+                .mapNotNull { UrlResolver.resolve(it.attr("src"), pageUrl) }
+                .filter { UrlResolver.originOf(it) == UrlResolver.originOf(pageUrl) }
+                // 第三方库先排除：jquery 里不会写站点的搜索地址，读它只是白花一次请求。
+                // 站点自己的代码通常叫 common / app / main，优先读
+                .filterNot { LIBRARY_SCRIPT.containsMatchIn(it) }
+                .sortedByDescending { SITE_SCRIPT.containsMatchIn(it) }
+                .distinct()
+                .take(MAX_SCRIPT_FILES)
+            if (sources.isNotEmpty()) onStep("页面没有搜索表单，检查 ${sources.size} 个脚本")
+            for (source in sources) {
+                val body = runCatching {
+                    pages.text(source, pageUrl, policy.trustAllCerts, policy.allowPlainHttp)
+                }.getOrElse { onStep("读取脚本失败：${it.message.orEmpty()}"); continue }
+                hints = SearchFormScanner.scriptHints(body)
+                if (hints.isNotEmpty()) {
+                    onStep("脚本里出现搜索地址：${hints.first().path}")
+                    break
+                }
+            }
+        }
+        if (hints.isEmpty()) return emptyList()
+
+        val fromDom = SearchFormScanner.paramHints(homeDoc)
+        return hints
+            .flatMap { hint ->
+                // 脚本自己声明的参数名 > 页面输入框的 name > 通用名。
+                // 三者混用时各自的候选都要试：脚本里可能存在多段拼接，参数名不止一个
+                val params = (listOfNotNull(hint.param) + fromDom.take(2) + "keyword").distinct()
+                buildList {
+                    params.forEach { add("${hint.path}?$it={keyword}") }
+                    // 路径式搜索：`/search/{kw}`、`/sousuo/{kw}/page/1` 这类
+                    add("${hint.path}/{keyword}")
+                }
+            }
+            .distinct()
+            .take(MAX_SCRIPT_CANDIDATES)
+            .map { SearchCandidate(homeRule.copy(path = it), "脚本线索 $it") }
+    }
 
     /**
      * 参数名候选：把「DOM 里出现过的参数名」和「常见入口路径」交叉组合。
@@ -773,8 +842,20 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             )
         }
 
-        // ---- 2. 常见地址模板 ----
+        // ---- 1.5 脚本里自己拼的地址（SPA / 无 form 模板）----
         val tried = mutableSetOf<String>()
+        for (candidate in scriptCandidates(home.rule, homeDoc, pageUrl, policy, onStep)) {
+            tried += candidate.rule.path
+            if (context.budget.exhausted) {
+                onStep("搜索请求已达上限，停止尝试")
+                return null
+            }
+            val hit = verify(candidate, context) ?: continue
+            onStep("搜索可用（脚本线索：${candidate.rule.path}）")
+            return SearchDetected(rule = hit.rule, note = "脚本里出现过的搜索地址")
+        }
+
+        // ---- 2. 常见地址模板 ----
         for (candidate in templateCandidates(home.rule)) {
             tried += candidate.rule.path
             if (context.budget.exhausted) {
@@ -1266,6 +1347,22 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
         /** 生僻词探测最多试几条组合 */
         const val MAX_PROBE_CANDIDATES = 8
 
+        /** 脚本线索最多试几条（每条 2~3 次请求，上限比模板表更紧） */
+        const val MAX_SCRIPT_CANDIDATES = 4
+
+        /** 最多读几个独立脚本找搜索地址：只读同源，且读到一个有结果就停 */
+        const val MAX_SCRIPT_FILES = 3
+
+        /** 这些脚本是第三方库，里面不会有站点的搜索地址 */
+        val LIBRARY_SCRIPT = Regex(
+            "jquery|zepto|lodash|bootstrap|popper|axios|swiper|vue|react|highlight|" +
+                "layui|polyfill|fontawesome",
+            RegexOption.IGNORE_CASE
+        )
+
+        /** 站点自己的脚本，名字通常长这样，优先读 */
+        val SITE_SCRIPT = Regex("common|app|main|site|search|function|index", RegexOption.IGNORE_CASE)
+
         /** 回显分数达到这个值才认为「页面确实用上了这个关键词」 */
         const val ECHO_MIN_SCORE = 2
 
@@ -1314,6 +1411,13 @@ class SourceAutoGenerator(private val pages: PageFetcher) {
             "/search/{keyword}",
             "/search/{keyword}/",
             "/s/{keyword}",
+            // 少数模板直接把关键字当路径参数：`/sousuo/{kw}`、`/so/{kw}`
+            "/sousuo/{keyword}",
+            "/so/{keyword}",
+            // 用户提到过的形态：`/comics?title=`、`/s?wd=`、`/search?title=`
+            "/comics?title={keyword}",
+            "/s?wd={keyword}",
+            "/search?title={keyword}",
             "/search.php?keyword={keyword}",
             "/index.php/search?keyword={keyword}",
             "/index.php/search/{keyword}"

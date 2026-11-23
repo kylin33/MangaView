@@ -156,6 +156,36 @@ class JsoupHttpClient(
      * 所以不靠"记得别用 http"这种约定，直接在这里拦住。放行凭据只有一个：
      * 配置里写明了 `allowPlainHttp: true`，而那是用户在弹窗里确认过的结果。
      */
+    /**
+     * 取一段**纯文本**（站点的 JS 文件）。
+     *
+     * 只给「找不到搜索表单时去脚本里翻搜索地址」用。不能用 [get] 代劳：
+     * jsoup 会把 .js 当 HTML 解析，`'/ss?wd=' + ...` 这类代码会被拆成节点，
+     * 引号和加号都留不住，正则再也匹配不到完整地址。
+     */
+    fun text(
+        url: String,
+        userAgent: String = AppConfig.USER_AGENT,
+        referer: String = "",
+        timeoutMs: Long = AppConfig.TIMEOUT_MS,
+        trustAllCerts: Boolean = false,
+        allowPlainHttp: Boolean = false
+    ): String {
+        guardPlainHttp(url, allowPlainHttp)
+        val connection = Jsoup.connect(url)
+            .userAgent(userAgent)
+            .header("Referer", referer.ifBlank { url })
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .timeout(timeoutMs.toInt())
+            // 脚本的 Content-Type 不是 text/html，不忽略会被 jsoup 当成不支持的类型拒掉
+            .ignoreContentType(true)
+            .maxBodySize(0)
+        if (trustAllCerts) {
+            connection.sslSocketFactory(trustAllSocketFactory)
+        }
+        return connection.execute().body()
+    }
+
     private fun guardPlainHttp(url: String, allowPlainHttp: Boolean) {
         if (allowPlainHttp) return
         if (url.startsWith("http://", ignoreCase = true)) throw PlainHttpBlockedException(url)

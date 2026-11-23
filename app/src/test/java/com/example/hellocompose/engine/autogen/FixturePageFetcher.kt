@@ -27,6 +27,26 @@ class FixturePageFetcher(private val site: FixtureSite) : PageFetcher {
         return site.document(route.page, url)
     }
 
+    /**
+     * 脚本文件按原样返回。
+     *
+     * 不能走 document()：那会把 `.js` 当 HTML 解析，`'/ss?wd=' + ...` 里的引号和加号
+     * 在节点树上留不住，正则就再也认不出地址 —— 在线实现走的是 ignoreContentType，
+     * 这里必须保持同样的语义，否则「测试通过、真机找不到」。
+     */
+    override fun text(
+        url: String,
+        referer: String,
+        trustAllCerts: Boolean,
+        allowPlainHttp: Boolean
+    ): String {
+        requests += url
+        val pathAndQuery = pathAndQueryOf(url)
+        val route = site.routes.firstOrNull { it.matches(pathAndQuery) }
+            ?: throw HttpStatusException("夹具没有登记脚本 $pathAndQuery", 404, url)
+        return site.page(route.page)
+    }
+
     /** 去掉 scheme 和 host，保留 path + query（含开头的 /） */
     private fun pathAndQueryOf(url: String): String {
         val afterScheme = url.substringAfter("://", url)

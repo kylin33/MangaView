@@ -41,6 +41,15 @@ fun interface PageFetcher {
         return get(url + separator + query, referer, trustAllCerts, allowPlainHttp)
     }
 
+    /**
+     * 取一段纯文本（站点的脚本文件）。
+     *
+     * 只在「首页没有搜索表单」时用：一部分站点把搜索地址拼在 `/static/js/app.js` 里，
+     * 页面上只有输入框，没有任何可读的 action。默认返回空串 ——
+     * 离线夹具和语料都是静态 HTML，不需要也不应该为此联网。
+     */
+    fun text(url: String, referer: String, trustAllCerts: Boolean, allowPlainHttp: Boolean): String = ""
+
     companion object {
         /** 默认实现：真连真抓，行为与直接使用 [JsoupHttpClient] 完全一致 */
         fun http(client: JsoupHttpClient = JsoupHttpClient()): PageFetcher = object : PageFetcher {
@@ -61,6 +70,18 @@ fun interface PageFetcher {
             ): Document = client.post(
                 url = url,
                 form = form,
+                referer = referer,
+                trustAllCerts = trustAllCerts,
+                allowPlainHttp = allowPlainHttp
+            )
+
+            override fun text(
+                url: String,
+                referer: String,
+                trustAllCerts: Boolean,
+                allowPlainHttp: Boolean
+            ): String = client.text(
+                url = url,
                 referer = referer,
                 trustAllCerts = trustAllCerts,
                 allowPlainHttp = allowPlainHttp

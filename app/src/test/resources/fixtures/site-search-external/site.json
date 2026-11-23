@@ -1,0 +1,39 @@
+{
+  "name": "外链脚本搜索站（地址只写在 /static/js/app.js 里）",
+  "baseUrl": "https://normal.example",
+  "input": "https://normal.example/",
+  "routes": [
+    {
+      "match": "prefix:/static/js/app.js",
+      "page": "app.js"
+    },
+    {
+      "match": "prefix:/ss2?kw=",
+      "page": "search.html"
+    },
+    {
+      "match": "prefix:/comic/",
+      "page": "detail.html"
+    },
+    {
+      "match": "prefix:/read/",
+      "page": "reader.html"
+    },
+    {
+      "match": "exact:/",
+      "page": "home.html"
+    }
+  ],
+  "expect": {
+    "outcome": "success",
+    "baseUrl": "https://normal.example",
+    "homeMin": 12,
+    "chapterMin": 40,
+    "imageMin": 10,
+    "imageDistinctRatio": 1.0,
+    "searchOnly": false,
+    "searchPath": "/ss2?kw={keyword}",
+    "searchMethod": "get",
+    "searchKeywordParam": "kw"
+  }
+}
