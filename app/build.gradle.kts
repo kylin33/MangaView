@@ -5,15 +5,21 @@ plugins {
 
 android {
     namespace = "com.example.hellocompose"
+    // namespace 留旧值：它只决定 R / BuildConfig 的包路径，换掉要连带移动整个
+    // 源码目录，对最终 APK 的包名没有影响。真正对外的是下面的 applicationId。
     compileSdk = 37
     compileSdkMinor = 2
 
+    // 站点配置模板只放在 src/debug/assets 下：debug 包能拿它当格式参考，
+    // release 包里因此一个站点 JSON 都不存在 —— 避免分发时带上任何具体站点。
+    // 正式包第一次启动就是空列表，站点全由用户自己填地址生成。
+
     defaultConfig {
-        applicationId = "com.example.hellocompose"
+        applicationId = "com.kylin.mangaview"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
     }
 
     buildTypes {
@@ -23,6 +29,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // 公开分发的包用 debug 签名：装得上、能升级，但换台机器签出来的名字不同，
+            // 所以只适合自己分发/侧载，不要指望它能上架商店或用它做长期增量升级。
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

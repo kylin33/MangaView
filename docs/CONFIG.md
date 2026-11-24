@@ -7,8 +7,11 @@
 
 | 位置 | 用途 | 优先级 |
 | --- | --- | --- |
-| `app/src/main/assets/sources/*.json` | 随 APK 打包的配置（仓库里只放一份模板） | 低 |
+| `app/src/debug/assets/sources/*.json` | 随 **debug** APK 打包的配置（仓库里只放一份模板） | 低 |
 | 设备上 `filesDir/sources/*.json` | App 内添加/导入的配置 | 高（同 id 覆盖内置） |
+
+模板只进 debug 源集，所以 release 包里 `assets/sources` 是空的：分发出的 APK
+不含任何站点配置，第一条配置只能由用户填首页地址生成。
 
 App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错不影响其它站点，
 错误会显示在抽屉底部。
@@ -129,7 +132,7 @@ App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错�
 
 ## 一份完整示例
 
-仓库里能跑的那份在 [`app/src/main/assets/sources/example-template.json`](../app/src/main/assets/sources/example-template.json)，
+仓库里能跑的那份在 [`app/src/debug/assets/sources/example-template.json`](../app/src/debug/assets/sources/example-template.json)，
 复制改名、改 `id` 与 `baseUrl`、按目标站点写好四组选择器，再把 `enabled` 改成 `true` 即可。
 
 ```json
@@ -181,8 +184,8 @@ App 启动时扫描两个目录全部加载进左侧抽屉。单个文件写错�
 
 ```bash
 adb push my-site.json /data/local/tmp/
-adb shell run-as com.example.hellocompose cp /data/local/tmp/my-site.json files/sources/
-adb shell am force-stop com.example.hellocompose
+adb shell run-as com.kylin.mangaview cp /data/local/tmp/my-site.json files/sources/
+adb shell am force-stop com.kylin.mangaview
 ```
 
 ## 加载时的校验

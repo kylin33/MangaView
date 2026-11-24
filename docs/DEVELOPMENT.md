@@ -13,7 +13,7 @@
 
 ```bash
 ./gradlew :app:assembleDebug       # 产物 app/build/outputs/apk/debug/app-debug.apk（约 15MB）
-./gradlew :app:assembleRelease     # 未签名的 release 包（当前未接 signingConfig，也没开 minify）
+./gradlew :app:assembleRelease     # app/build/outputs/apk/release/app-release.apk（debug 签名，未开 minify）
 ./gradlew :app:testDebugUnitTest   # 234 个单元测试，默认不联网
 ```
 
@@ -203,8 +203,8 @@ vs 首页/目录/图片抓错了），混在一起就分不清该改哪里。搜
 
 ```bash
 adb push my-site.json /data/local/tmp/
-adb shell run-as com.example.hellocompose cp /data/local/tmp/my-site.json files/sources/
-adb shell am force-stop com.example.hellocompose
+adb shell run-as com.kylin.mangaview cp /data/local/tmp/my-site.json files/sources/
+adb shell am force-stop com.kylin.mangaview
 ```
 
 字段含义见 [CONFIG.md](CONFIG.md)。

@@ -10,3 +10,9 @@ build/
 .kotlin
 local.properties
 *.hprof
+
+# 实连测试时随手记的站点清单：属于个人调试痕迹，不进公开仓库
+test_url.txt
+
+# 本机工作记录（识别/构建的日志与待办）
+.workbuddy/

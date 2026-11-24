@@ -141,7 +141,8 @@ MangaView 反过来做：**不内置任何站点**。程序在运行时去读站
 
 ## 它不做什么
 
-- **不提供、不托管、不分发任何漫画内容**，仓库里没有站点规则，只放一份格式模板。
+- **不提供、不托管、不分发任何漫画内容**，仓库里没有站点规则，只放一份格式模板；
+  **release 包里连模板都不打包**（模板在 `src/debug/assets`，只进 debug 包）。
 - **不绕过人机验证、登录墙、加密接口**。整屏 JS 渲染且搜索也不可用、正文由加密接口下发、
   必须登录才能看 —— 直接报错并说明原因，不硬生成一份假配置。
 - **证书错误不自动放宽**。握手失败是确定性结论，停下来弹窗给你看证书详情，
@@ -164,8 +165,14 @@ MangaView 反过来做：**不内置任何站点**。程序在运行时去读站
 
 ```bash
 ./gradlew :app:assembleDebug      # 产物 app/build/outputs/apk/debug/app-debug.apk（约 15MB）
+./gradlew :app:assembleRelease    # 产物 app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:testDebugUnitTest  # 234 个单元测试，默认不联网
 ```
+
+对外分发的 release 包用 **debug 签名**签发（`signingConfigs.getByName("debug")`），
+装得上、能覆盖升级，但不是正式发布密钥 —— 换个环境签同名包会冲突，也不要用它上架商店。
+自己长期维护就换成自己的 keystore：在 `app/build.gradle.kts` 里加一个 `signingConfigs`
+即可，不要把它提交进仓库。
 
 需要 JDK 17 以上与 Android SDK 37；minSdk 24，Android 7.0 起能装。
 工具链的坑（AGP 9 不再需要 Kotlin 插件、`compileSdkMinor`、块注释可嵌套）写在

@@ -37,6 +37,7 @@ class SourceConflictException(val sourceId: String) :
  *
  * 来源有两处，后者覆盖前者（同 id 覆盖）：
  * 1. `assets/sources` 目录下的 JSON —— 随 APK 打包，只读
+ *    （只有 debug 包带模板；release 包这个目录是空的，见 app/build.gradle.kts）
  * 2. `filesDir/sources` 目录下的 JSON —— App 里「添加站点」写入的位置，也兼容 adb 手工推送
  *
  * 内置配置改不了，所以「编辑内置配置」的语义是：把内容读出来，
